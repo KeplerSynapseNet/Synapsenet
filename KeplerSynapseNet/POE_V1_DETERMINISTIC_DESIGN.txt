@@ -1,0 +1,663 @@
+════════════════════════════════════════════════════════════════════════════════
+                  PROOF OF EMERGENCE (PoE) v1 — DETERMINISTIC DESIGN
+════════════════════════════════════════════════════════════════════════════════
+
+The PoE idea is strong, but if PoE becomes a network rule it must be:
+  • deterministic (all nodes compute the same result)
+  • verifiable (any node can validate cheaply)
+
+An LLM score cannot be consensus:
+  • different hardware/backends produce different outputs
+  • floating point / quantization / tokenization differences exist
+  • models change and are not universally available
+
+So: use deterministic metrics for consensus. Use LLMs only for local UX.
+
+
+════════════════════════════════════════════════════════════════════════════════
+                               PoE v1 (PROPOSAL)
+════════════════════════════════════════════════════════════════════════════════
+
+1) Two-phase rewards
+   (A) Acceptance reward (anti-spam, small)
+   (B) Emergence reward (later, for measured impact)
+
+
+2) Anti-spam (deterministic)
+   • Hashcash-style PoW on: hash(entry_bytes || nonce)
+   • Size/structure limits (max bytes, required fields, max links/citations)
+   • If there is no strong anti-spam gate, the network will be flooded.
+
+
+3) Novelty (deterministic)
+   • Canonicalize text (lowercase, whitespace normalization, stable rules)
+   • Build shingles (k-grams) and compute SimHash and/or MinHash
+   • Compare against the nearest entries in a local index
+   • noveltyScore = 1.0 - similarityMax
+
+Notes:
+   • Similarity must be deterministic (same normalization, same hash functions)
+   • The "nearest entries" search must be deterministic at verification time
+     (e.g., compare against a fixed window, or verify against explicit candidates).
+
+
+4) Peer review (deterministic)
+   • Deterministic validator selection:
+       validators = PRF(prevBlockHash, entryId) → choose N validators
+   • Validators sign a vote (format / duplicate / citations / basic quality flags)
+   • M-of-N votes finalizes the entry.
+
+This keeps "human judgment" out of consensus and keeps rules verifiable.
+
+
+5) Emergence (impact over time, deterministic)
+   • Each knowledge entry stores citations[] = IDs of referenced entries
+   • At epoch boundaries:
+       compute a simple PageRank/credit score on the citation graph
+   • Add anti-gaming constraints:
+       - cap self-citations per author
+       - ignore tight cycles that only cite each other
+       - cap outgoing citations per entry
+   • Distribute an epoch reward budget proportional to impact.
+
+
+6) LLM remains useful, but outside consensus
+   • LLM can help the UI: suggestions, summaries, local scoring, search hints
+   • On-chain / network rules must only contain what every node can recompute 1:1
+
+
+════════════════════════════════════════════════════════════════════════════════
+                              WHAT TO BUILD NEXT
+════════════════════════════════════════════════════════════════════════════════
+
+Data structures (suggested):
+  • KnowledgeEntry:
+      - entryId (hash), author address/pubkey, timestamp
+      - title, text, citations[]
+      - nonce, powTarget, contentHash
+      - optional: simhash/minhash fingerprints
+  • ValidationVote:
+      - entryId, validatorId, prevBlockHash
+      - flags (malformed, duplicate, bad citations, spam)
+      - scores (bounded integers), signature
+  • EpochReward:
+      - epochId, totalReward, deterministic allocation (or allocation root hash)
+
+Deterministic primitives:
+  • canonicalize(text) → bytes
+  • powCheck(entryBytes, nonce, target) → bool
+  • simhash(canonicalText) / minhash(shingles) → fixed-size
+  • selectValidators(prevBlockHash, entryId, N) → list
+  • rewardFormula(entry, votes, novelty, epochImpact) → integer amount
+
+Integration points in this repo (high level):
+  • core:
+      - KeplerSynapseNet/src/core/knowledge.cpp + include/core/knowledge.h
+      - KeplerSynapseNet/src/core/transfer.cpp + include/core/transfer.h
+  • networking / protocol:
+      - KeplerSynapseNet/src/infrastructure/messages.* (message formats)
+      - KeplerSynapseNet/src/network/protocol.cpp (routing/broadcast)
+  • tests:
+      - add deterministic tests for canonicalization, simhash, PoW, selection
+
+Roadmap (minimal, in order):
+  [x] 1) Canonical text + SimHash
+  [x] 2) Acceptance PoW gate + basic validation rules
+  [x] 3) Validator selection + vote messages (local/static)
+  [x] 4) M-of-N finalize (local/static)
+  [x] 5) Citation graph + epoch rewards (offline deterministic + network propagation)
+  [x] 6) Wire rewards into balances deterministically (acceptance + epoch via rewardId; idempotent)
+  [x] 7) P2P PoE sync paging (entries + votes): poe_getinv/poe_inv → inv/getdata → poe_entry/poe_vote
+  [x] 8) P2P epoch record propagation: inv/getdata → poe_epoch (verified import + deterministic mint)
+
+
+If you want, the next step is to define the exact fields in KnowledgeEntry and
+ValidationVote, the exact reward formula (integers only), and where to store the
+minimal indexes so verification stays cheap.
+
+
+════════════════════════════════════════════════════════════════════════════════
+                         WHAT IS NOT DONE YET (PROJECT TODO)
+════════════════════════════════════════════════════════════════════════════════
+
+The biggest missing pieces are the ones that make the system truly "networked"
+and make rewards provably fair.
+
+1) PoE as consensus
+   • Deterministic rules:
+       canonical text → simhash/minhash
+       anti-spam PoW gate
+       deterministic validator selection
+       M-of-N signed votes → finalization
+       epoch reward via citations/graph
+   • LLM remains UX only. LLM output must not be consensus.
+
+2) Transactions / balances
+   • A strict model (UTXO or account-based)
+   • Signed transactions
+   • Mempool + fee rules
+   • Double-spend prevention
+   • Fixed emission rules (no accidental "millions")
+
+3) P2P network hardening
+   • Message protocol for: knowledge entries, votes, txs, blocks/epochs
+   • Peer discovery/handshake + sync that recovers from partial state
+   • Rate limits and DoS protection
+   • Deterministic validation of every incoming object
+
+Status now (real in this repo):
+   ✓ PoE entries + votes sync across peers (paging inventory, not "last N")
+   ✓ PoE epoch records sync across peers (poe_epoch + POE_EPOCH inv)
+   ✓ Transactions: UTXO ownership enforced (input pubkey must match the UTXO address)
+   ✓ P2P: mempool sync on connect (mempool → inv → getdata)
+   ✓ Blocks: transfer events are validated and applied on block import/mine (balances stay consistent)
+   ✓ Single-instance lock is robust (fcntl lock; no stale locks after downloads)
+   • Transactions are still minimal (coinbase/miner rewards, reorg handling).
+
+Next milestone checklist (mainnet-readiness):
+  [x] Transaction fee policy (min fee + deterministic mempool eviction rules)
+  [x] Reorg handling for transfers (rollback/apply UTXO changes deterministically)
+  [x] Deterministic validator set beyond static (stake/identity rules)
+  [x] P2P rate limits + max message sizes + DoS hardening (basic: framed reads + per-peer limits)
+  [x] Similarity index for novelty (deterministic candidate sets via SimHash buckets)
+  [x] UI polish: input editing, clear reward receipts, chat autoscroll, operation statuses, reward notifications (stop generation is done)
+
+4) Storage and indexes
+   • Durable chain + state storage
+   • Indexes for similarity/dedup search (deterministic verification inputs)
+   • Migrations / crash recovery / corruption detection
+
+5) TUI / UX polish
+   ✓ Chat autoscroll + manual scroll that feels consistent (auto-scrolls to new messages, disables when user scrolls up, re-enables on send/generation start)
+   • Proper line editing in input (arrows, home/end, ctrl shortcuts) [partial - arrows/home/end work]
+   ✓ Stop generation / cancel long ops (F8)
+   ✓ Clear statuses: what is happening, what is pending, what succeeded (operation status tracking in status bar: Submitting/Validating/Finalized with details)
+   ✓ Reward feedback: "you earned X NGT for this contribution" (and why) (showRewardNotification with reason, entryId, validator details, epoch info)
+
+6) Web/Darknet module integration (optional)
+   • Today it is a library under KeplerSynapseNet/src/web/
+   • If enabled: integrate carefully and safely; default OFF
+
+7) Privacy/Quantum integration (later)
+   • Code exists, but without protocol integration it is effectively a "flag"
+   • Do this after PoE + network + balances are stable and deterministic
+
+
+════════════════════════════════════════════════════════════════════════════════
+                        PRACTICAL NEXT STEPS (ACTIONABLE)
+════════════════════════════════════════════════════════════════════════════════
+
+These steps are about reducing ambiguity and making the system buildable.
+
+1) Write the "truth of the project" (one paragraph)  [x]
+   • Today: a single-node app with local AI + UI
+   • Next: real P2P network + PoE consensus rules
+   • This sets expectations and builds trust.
+
+2) Define stable wire formats  [x]
+   • KnowledgeEntry v1:
+       canonical text, strict size limits, citations[], powNonce, author signature
+   • ValidationVote v1:
+       entryId, prevBlockHash, flags/scores, validator signature
+   • Without stable formats, everything will drift.
+
+3) Remove reward/balance simulations from production logic  [x]
+   • Default balance = 0
+   • Rewards only after a verifiable event (finalize / epoch)
+   • Any "test mint" belongs only in tests.
+
+4) Add a developer mode flag  [x]
+   • Example: --dev
+   • Allows faster parameters (low PoW target, fewer validators, small epochs)
+   • Must not change mainnet rules (keep "dev" clearly separated).
+   • Multi-node dev requires a shared validator set:
+       - start nodes with the same `--poe-validators` list (comma-separated pubkey hex)
+       - `self` token is allowed (adds this node's pubkey)
+       - helper: `synapsed poe pubkey` prints your full pubkey hex
+
+5) Minimal CLI / RPC for PoE objects  [x]
+   • submit / vote / finalize / epoch
+   • export/import local DB for debugging and reproducible runs
+   • Makes development possible without relying on the UI.
+   • helpers:
+       - `synapsed poe pubkey`
+       - `synapsed poe validators`
+   • implementation notes:
+       [x] CLI routes to RPC when daemon is running (no instance-lock conflicts)
+       [x] RPC endpoints: poe.*, wallet.*, node.* (status/peers/logs)
+
+6) Determinism test suite  [x]
+   • Same input → same entryId
+   • Same canonicalization → same simhash/minhash
+   • Same votes/epoch → same reward (integers)
+   • If determinism fails, the network will split.
+
+7) UI separation: "chat" vs "contribution"  [x]
+   • Chat stays free-form
+   • Contribution is a distinct flow (form/command) with:
+       - what will be published
+       - which checks will run
+       - expected reward bounds
+       - finalization status (pending / accepted / finalized)
+
+════════════════════════════════════════════════════════════════════════════════
+                      SYNAPSE IDE (AI CODING + NGT) — TODO
+════════════════════════════════════════════════════════════════════════════════
+
+Goal:
+  • You code with local AI like Copilot.
+  • Useful code/patches can be submitted as PoE v1 entries (ContentType::CODE).
+  • The network rewards code contributions only after deterministic verification
+    (finalize / epoch), never from an LLM "score".
+
+Non-negotiables:
+  • Deterministic consensus: chain rules cannot depend on LLM output.
+  • Local-first by default: remote compute must be opt-in.
+  • Honest security: "provider cannot see your code" is only possible with
+    trusted hardware (TEE / confidential computing) or local inference.
+
+Work items:
+  [x] Define CodeContributionV1 (patch/diff format, canonicalization, size limits)
+      - stored as PoE v1 KnowledgeEntryV1 with ContentType::CODE
+      - body is a patch/diff (unified diff recommended)
+      - canonicalization preserves case (canonicalizeCode removes CR, keeps bytes)
+      - limits: title up to 512 bytes, body up to 65536 bytes
+  [x] Extend PoE v1 submission for CODE entries (citations[], PoW, author sig)
+  [x] Add CLI/RPC routes:
+      - RPC: poe.submit_code, poe.list_code, poe.fetch_code (id can be submitId or contentId)
+      - CLI: synapsed poe submit-code / list-code / fetch-code
+  [x] UI flow:
+      [x] TUI "Code" screen + file-based patch submit (title + patch-file + citations)
+      [x] VS Code extension prototype (ide/synapsenet-vscode):
+          - model.status/model.load + ai.complete (insert) + poe.submit_code (patch file)
+      [x] VS Code IDE chat panel (SynapseNet: Open Chat) with optional Web4 injection (clearnet/onion/Tor)
+      [x] IDE inline completion (ghost text) via ai.complete (basic; prompt shaping can improve)
+      [x] IDE patch/diff suggestion UI (preview/apply) via unified diff (VS Code: Suggest Patch)
+      [x] show deterministic reward receipts in chat (+X NGT) tied to finalize/epoch
+	  [x] Decide IDE implementation path (pick one first):
+	      [x] VS Code extension that calls synapsed RPC (fastest; chosen first)
+	      [x] Standalone terminal IDE (synapseide) embedding the same RPC
+	          - repo vendored at: KeplerSynapseNet/crush-main
+	          - builds a local-only binary: synapseide
+	          - provider: synapsenet (talks to synapsed RPC ai.complete + model.*)
+	          - cloud providers are disabled by default in this fork (local-only focus)
+		          - UI branding: SynapseNet/SynapseIDE (no Crush/devel strings)
+		          - model picker is local-only (configured providers + discovered local GGUF via synapsed RPC model.list + ~/.synapsenet/models fallback)
+		          - ignore files: .synapseideignore (hierarchical like .gitignore; legacy ignore file supported)
+		          - env vars: SYNAPSEIDE_* for IDE runtime toggles and provider env passthrough (legacy prefix supported)
+		          - default coding GGUF: deepseek-coder-6.7b-instruct.Q4_K_M.gguf
+		          - Code: KeplerSynapseNet/crush-main/internal/config/load.go lines 448-495 | KeplerSynapseNet/crush-main/internal/tui/components/dialogs/models/list.go lines 109-375 | KeplerSynapseNet/crush-main/internal/tui/components/logo/logo.go lines 32-112 | KeplerSynapseNet/src/model/model_loader.cpp lines 931-954
+		          - Code: KeplerSynapseNet/crush-main/internal/config/load.go lines 95-147 | KeplerSynapseNet/crush-main/internal/fsext/ls.go lines 84-98 | KeplerSynapseNet/crush-main/internal/fsext/ls.go lines 193-207 | KeplerSynapseNet/crush-main/internal/agent/tools/grep.go lines 206-218
+	      [x] Make synapsed RPC IDE-safe:
+	          - JSON-RPC params parsing is real JSON (no brace-counting bugs)
+	          - model inference handles long prompts (chunked decode to n_batch + truncation)
+  [ ] Model routing:
+      [x] local: GGUF completion inside synapsed (default) via RPC/CLI:
+          - RPC: model.status/model.list/model.load/model.unload + ai.complete/ai.stop
+          - CLI: synapsed model ... + synapsed ai ...
+      [ ] remote: rent a model slot from a provider node (optional; user opt-in)
+  [ ] Remote privacy roadmap (if we want provider-blind):
+      - baseline: encrypted transport (provider still sees plaintext inside inference)
+      - better: confidential computing + remote attestation (provider cannot inspect)
+      - research: FHE/MPC (too slow today)
+  [ ] Reward policy for code:
+      - acceptance reward on finalize (anti-spam incentive)
+      - emergence reward via citations / dependency graph (epoch)
+      - anti-gaming: deterministic dedup for code, cap self-cites, strict limits
+  [ ] Terminal IDE client (Warp-like UX):
+      - branded splash (dot-matrix "SYNAPSENET" + tips)
+      - isolated threads (/tangent) that don't pollute main chat history
+      - multi-line input (ctrl+j newline), fuzzy search (ctrl+s), fast navigation
+      - "patch mode": generate unified diff → preview → apply → optionally submit as PoE CODE
+      - local model by default; optional rented model sessions (user opt-in)
+      - SynapseNet integration:
+          - TUI: Dashboard [9] → Code screen → [I] Launch IDE (runs synapseide)
+          - IDE uses local synapsed RPC by default: SYNAPSENET_RPC_URL=http://127.0.0.1:8332
+  [ ] GitHub Quests (SynapseNet tasks inside IDE):
+      - connect GitHub account (token/OAuth) to fetch a "Quest board" (issues/milestones)
+      - quests always visible while coding: pick quest → open repo/branch/fork workflow
+      - create PR from IDE (diff preview + commit helper), attach PoE CODE submitId in PR
+      - validators/community vote "accepted" (or merged PR) → deterministic reward distribution
+      - anti-abuse: rate limits, minimum PoW for quests, duplicate quest detection
+
+
+════════════════════════════════════════════════════════════════════════════════
+                   TOR / ONION STARTUP PROMPTS (USER CHOICE)
+════════════════════════════════════════════════════════════════════════════════
+
+Goal: Tor/onion is a first-class knowledge source, but the user must explicitly
+choose it at startup. No surprises.
+
+Status in this repo (current code):
+  [x] Implemented in TUI startup as Screen::WEB_PROMPT (shown once per datadir)
+      - stored in synapsenet.conf:
+          web.prompt_done, web.inject.enabled, web.inject.onion, web.inject.tor_clearnet
+      - can be toggled later in AI Chat:
+          F5 Web injection, F6 Onion, F7 Tor
+
+Startup flow (first run; default is NO):
+  1) Prompt: "Enable AI web injection (search + citations)?"  [Y/N]
+     • If No:
+         - no web search injection (chat stays local-only)
+         - onion + Tor toggles stay OFF
+     • If Yes:
+         - enables the AI wrapper to fetch and inject web snippets into the prompt
+
+  2) Prompt: "Enable AI web search on onion sources too?"  [Y/N]
+     • If Yes:
+         - clearnet + onion retrieval
+     • If No:
+         - clearnet only
+
+  3) Prompt: "Route clearnet web requests through Tor?"  [Y/N]
+     • If Yes:
+         - route clearnet fetching through Tor SOCKS5 (if Tor is running)
+     • If No:
+         - direct clearnet fetching (fast, less private)
+
+Rules:
+  • Default choice should be "No" unless user opts in.
+  • The choice must be changeable later in the UI (AI Chat hotkeys / Settings).
+  • Always show the current mode in the UI (Tor: ON/OFF, Onion search: ON/OFF).
+
+
+════════════════════════════════════════════════════════════════════════════════
+                        GITHUB RELEASE PACKAGING (LATER)
+════════════════════════════════════════════════════════════════════════════════
+
+When the core implementation is stable, we prepare the GitHub packaging:
+  • README.md (honest status, build/run, feature flags)
+  • ROADMAP.md (PoE v1 milestones)
+  • SECURITY.md (reporting + basic threat model)
+  • LICENSE
+  • .gitignore (ignore build/, models/*.gguf, local wallets, logs)
+
+
+════════════════════════════════════════════════════════════════════════════════
+                        "TRUTH OF THE PROJECT" (DRAFT)
+════════════════════════════════════════════════════════════════════════════════
+
+SynapseNet today is a single-node prototype: it runs a local GGUF model and a
+terminal UI, stores state locally, and lets you chat and submit draft knowledge.
+The distributed validator network and deterministic PoE consensus rewards are
+the next milestone and are not yet fully deployed. This is intentional: first
+we lock determinism and verifiability, then we scale.
+
+
+════════════════════════════════════════════════════════════════════════════════
+                         DESIGN PRINCIPLES (NON-NEGOTIABLE)
+════════════════════════════════════════════════════════════════════════════════
+
+1) Determinism beats cleverness
+   • If two honest nodes can disagree, the rule is not a consensus rule.
+
+2) Verifiability beats ML judgement
+   • Any node must validate cheaply with only on-chain / agreed data.
+
+3) Integers only in consensus
+   • No floats in rewards, scoring, weights, or balances.
+
+4) Separate UX from consensus
+   • LLM is UI/assistance, not a judge.
+
+5) Stable formats and versioning
+   • Everything on the wire is versioned.
+   • Upgrades are explicit and testable.
+
+
+════════════════════════════════════════════════════════════════════════════════
+                           POE OBJECTS (V1 DRAFT)
+════════════════════════════════════════════════════════════════════════════════
+
+Consensus should be built from a small set of explicit objects:
+
+  • KnowledgeEntryV1
+  • ValidationVoteV1
+  • FinalizationRecordV1
+  • EpochRewardRecordV1
+
+Anything else is either local metadata or UI-only.
+
+
+════════════════════════════════════════════════════════════════════════════════
+                          KNOWLEDGEENTRY v1 (DRAFT)
+════════════════════════════════════════════════════════════════════════════════
+
+Goal: represent a knowledge contribution in a way that is:
+  • content-addressed (dedup possible)
+  • cheaply verifiable
+  • resilient to spam
+
+Recommended split:
+  • contentId  = H(canonical_body)
+  • submitId   = H(contentId || powNonce)
+  • powHash    = H(contentId || powNonce)  (same as submitId for simplicity)
+
+Fields (example, not final):
+  - version: u8 = 1
+  - timestamp: u64 (unix seconds)
+  - authorPubKey: bytes (fixed size by key scheme; v1 can use compressed secp256k1)
+  - contentType: u8 (TEXT / Q&A / CODE / LINKLIST / OTHER)
+  - title: bytes (len-prefixed)
+  - body: bytes (len-prefixed)
+  - citations: list<32-byte contentId> (len-prefixed count)
+  - attachments: list<32-byte hash> (optional)
+  - powNonce: u64
+  - powTarget: u32 (compact "bits" or fixed target value; must be exact)
+  - authorSig: bytes (signature over canonical_body + powNonce + powTarget)
+
+Canonical hashes:
+  canonical_body = deterministic encoding of:
+    version, timestamp, authorPubKey, contentType, title, body, citations, attachments
+
+  contentId = SHA256(canonical_body)
+  submitId  = SHA256(contentId || powNonce)
+
+PoW rule:
+  submitId must be <= target(powTarget)
+
+Important:
+  • Keep maximum sizes strict (bytes and counts).
+  • Reject entries that exceed limits before doing any expensive work.
+
+
+════════════════════════════════════════════════════════════════════════════════
+                          VALIDATIONVOTE v1 (DRAFT)
+════════════════════════════════════════════════════════════════════════════════
+
+Goal: deterministic finalization without subjective ML judgement.
+
+Fields (example):
+  - version: u8 = 1
+  - submitId: 32 bytes
+  - prevBlockHash: 32 bytes (or epochSeed)
+  - validatorPubKey: bytes
+  - flags: u32 bitset
+      bit0 malformed
+      bit1 duplicate
+      bit2 bad_citations
+      bit3 spam_suspected
+  - scores: u16[3] (bounded integers, e.g. format / novelty / relevance)
+  - signature: bytes (sign the whole vote payload)
+
+Consensus rule:
+  • A vote is valid only if the validator is in the deterministic validator set
+    for (prevBlockHash, submitId).
+
+
+════════════════════════════════════════════════════════════════════════════════
+                       FINALIZATION (M-of-N, DRAFT)
+════════════════════════════════════════════════════════════════════════════════
+
+FinalizationRecordV1:
+  - submitId
+  - prevBlockHash / epochSeed
+  - validatorSetHash (hash of validator pubkeys list)
+  - votes: list<ValidationVoteV1> (or vote hashes + signatures)
+  - finalizedAt: u64
+
+Rule:
+  • An entry is finalized when it has >= M valid votes with no fatal flags.
+  • "fatal flags" must be deterministic (e.g. malformed, invalid PoW, invalid sig).
+
+Recommendation:
+  • Keep M and N small in dev mode, larger in production.
+
+
+════════════════════════════════════════════════════════════════════════════════
+                         EMERGENCE (EPOCH REWARD, DRAFT)
+════════════════════════════════════════════════════════════════════════════════
+
+Each finalized entry can earn more later based on real usage:
+  • citations[] are edges in a graph.
+  • At epoch boundaries compute impact from the graph.
+
+Minimal deterministic approach:
+  • Build a graph from entries finalized in the last W epochs (window).
+  • Compute PageRank-like scores with fixed iterations (e.g. 20) and integer math:
+      scoreNext[i] = (1-d)/N + d * sum(score[j]/outDegree[j] for j→i)
+    implemented using fixed-point integers.
+  • Apply anti-gaming rules deterministically:
+      - cap citations per entry
+      - cap self-citations per author per epoch
+      - ignore duplicate citations
+      - optionally ignore strongly connected components above a threshold
+
+EpochRewardRecordV1:
+  - epochId
+  - epochSeed
+  - totalBudget (integer)
+  - allocationRoot (optional merkle root of (contentId → amount))
+
+
+════════════════════════════════════════════════════════════════════════════════
+                     VALIDATOR SELECTION (DETERMINISTIC, DRAFT)
+════════════════════════════════════════════════════════════════════════════════
+
+Key requirement:
+  • Every honest node must compute the same validator set from chain data only.
+
+Do not select validators from "connected peers" (non-deterministic).
+
+Options (choose one for v1):
+
+  A) Static validator set (development / early network)
+     • A list of validator public keys in config or genesis block.
+     • Simple and deterministic; not sybil-resistant.
+
+  B) Stake-based validator set (later)
+     • Validator set comes from on-chain stake transactions.
+     • Selection is weighted and deterministic.
+
+Selection algorithm sketch:
+  seed = SHA256(prevBlockHash || submitId)
+  For i in 0..N-1:
+     pick_i = SHA256(seed || i)
+     choose validator by pick_i mapped into validator set
+
+
+════════════════════════════════════════════════════════════════════════════════
+                    REWARDS (STRICT, INTEGER-ONLY, DRAFT)
+════════════════════════════════════════════════════════════════════════════════
+
+Two budgets:
+  • acceptanceBudget: small, per-entry (anti-spam incentive)
+  • epochBudget: larger, per-epoch (impact incentive)
+
+Acceptance reward (example):
+  reward = baseReward
+  reward += k * difficultyBits(powTarget)    (bounded)
+  reward -= sizePenalty(bytes)              (bounded)
+  clamp to [minReward, maxReward]
+
+Epoch reward:
+  allocation = epochBudget * impactScore / sumImpactScore
+  integer division with remainder distributed deterministically (by contentId sort)
+
+Important:
+  • Rewards must be reproducible across platforms.
+  • All rounding rules must be specified exactly.
+
+
+════════════════════════════════════════════════════════════════════════════════
+                       ATTACKS TO EXPECT (AND PLAN FOR)
+════════════════════════════════════════════════════════════════════════════════
+
+Spam floods:
+  • solved by PoW gate + strict size limits + rate limits
+
+Sybil validators:
+  • static validator set is not sybil-resistant (acceptable for dev only)
+  • production needs stake/identity constraints
+
+Citation farming:
+  • solved by caps + cycle penalties + windowing + validator review flags
+
+Plagiarism / near-duplicate abuse:
+  • solved by deterministic similarity + validator flags + reduced rewards
+
+Collusion:
+  • mitigated by deterministic selection and larger N/M
+  • long-term: slashing / stake penalties
+
+
+════════════════════════════════════════════════════════════════════════════════
+                         "REAL CRYPTO" NOTE (IMPORTANT)
+════════════════════════════════════════════════════════════════════════════════
+
+Consensus signatures must be real and standard.
+If the key/signature scheme is a placeholder, the network is not secure.
+
+For a production network you will eventually need:
+  • secp256k1 or Ed25519 signatures
+  • canonical signature encoding
+  • strict verification rules and test vectors
+
+Status in this repo (current code):
+  [x] secp256k1 ECDSA (RFC6979 deterministic nonce)
+  [x] real pubkey derivation + signature verify (no placeholders)
+  [x] PoE votes/entries verify deterministically across nodes
+
+
+════════════════════════════════════════════════════════════════════════════════
+                         IMPLEMENTATION MILESTONES (V1)
+════════════════════════════════════════════════════════════════════════════════
+
+Milestone 0: Deterministic library (offline)
+  [x] • canonicalize()
+  [x] • contentId/submitId hashing
+  [x] • PoW check
+  [x] • simhash/minhash (SimHash + MinHash16 implemented)
+  [x] • deterministic tests
+
+Milestone 1: Local node flow
+  [x] • UI "contribute" produces KnowledgeEntryV1
+  [x] • store in DB
+  [x] • show "pending / accepted" locally
+
+Milestone 2: Network gossip (best-effort)
+  [x] • broadcast entries + votes
+  [x] • basic sync
+  [x] • strict validation on receive
+  [x] • auto-vote when selected (so 2 nodes can finalize)
+
+Milestone 3: Finalization
+  [x] • deterministic validator set (static for dev)
+  [x] • M-of-N votes finalizes
+  [x] • acceptance reward minted only on finalization
+
+Milestone 4: Epoch rewards
+  [x] • graph build + fixed-point rank
+  [x] • epoch reward record + deterministic allocation
+
+
+════════════════════════════════════════════════════════════════════════════════
+                              OPEN QUESTIONS (V1)
+════════════════════════════════════════════════════════════════════════════════
+
+1) Do we start with a static validator set (dev) or stake-based from day one?
+2) What is the maximum on-chain payload size for title/body?
+3) Do we store full text on-chain, or store contentHash + external storage?
+4) What is the supply curve for NGT (fixed cap vs tail emission)?
+5) What is the minimum viable "knowledge type" taxonomy for v1?
+6) How do we handle content that should not be stored/propagated?

@@ -1,0 +1,28 @@
+# Build artifacts
+build/
+build_*/
+tmp/
+*.o
+*.a
+*.so
+*.dylib
+
+# Binaries
+synapsed
+simple_tui_test
+test_ncurses
+
+# Local data (wallets, models, logs)
+*.db
+*.db-shm
+*.db-wal
+models/*.gguf
+models/*.part*
+*.log
+.synapseide/
+
+# OS
+.DS_Store
+
+# IDE
+node_modules/
