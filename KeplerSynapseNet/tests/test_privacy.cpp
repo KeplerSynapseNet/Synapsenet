@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <algorithm>
 #include <chrono>
 #include <random>
 #include <chrono>
