@@ -1,5 +1,6 @@
 #include "quantum/quantum_security.h"
 #include "crypto/crypto.h"
+#include <algorithm>
 #include <mutex>
 #include <random>
 #include <cstring>

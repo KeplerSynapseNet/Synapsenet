@@ -41,7 +41,7 @@ RUN cmake -S . -B build -G Ninja \
       -DBUILD_TESTS=ON \
       -DBUILD_IDE=ON \
       -DBUILD_PRIVACY=OFF \
-  && cmake --build build --target synapsed synapseide_build \
+  && cmake --build build --parallel \
   && ctest --test-dir build --output-on-failure
 
 # Minimal runtime image (Linux). Users on macOS/Windows can run this via Docker Desktop.
@@ -60,4 +60,3 @@ COPY --from=build /src/build/synapseide /app/synapseide
 
 EXPOSE 8332
 ENTRYPOINT ["/app/synapsed"]
-
