@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "model/model_loader.h"
 #include "utils/config.h"
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 

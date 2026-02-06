@@ -54,10 +54,27 @@ if(USE_SECP256K1)
     endif()
 endif()
 
-# Find and require ncurses
-find_package(Curses REQUIRED)
+# Find and require curses/ncurses (TUI dependency).
+# NOTE: On some Windows environments (e.g. MSYS2) CMake's FindCurses can be flaky,
+# so we fall back to pkg-config when needed.
+if(WIN32)
+    set(CURSES_NEED_NCURSES TRUE)
+    set(CURSES_NEED_WIDE TRUE)
+endif()
+find_package(Curses QUIET)
 if(NOT CURSES_FOUND)
-    message(FATAL_ERROR "ncurses library not found. Install with: 'brew install ncurses' (macOS) or 'apt-get install libncurses-dev' (Linux)")
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(NCURSES QUIET ncursesw ncurses)
+        if(NCURSES_FOUND)
+            set(CURSES_FOUND TRUE)
+            set(CURSES_LIBRARIES ${NCURSES_LIBRARIES})
+            set(CURSES_INCLUDE_DIR ${NCURSES_INCLUDE_DIRS})
+        endif()
+    endif()
+endif()
+if(NOT CURSES_FOUND)
+    message(FATAL_ERROR "curses/ncurses library not found. Install with: 'brew install ncurses' (macOS), 'apt-get install libncurses-dev' (Linux), or 'pacman -S ncurses' (MSYS2)")
 endif()
 
 # Find SQLite3 with better error handling

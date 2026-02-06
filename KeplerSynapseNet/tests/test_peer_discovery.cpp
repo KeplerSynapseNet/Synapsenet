@@ -1,5 +1,6 @@
 #include <iostream>
 #include <cassert>
+#include <cstdint>
 #include <vector>
 #include <string>
 #include <thread>

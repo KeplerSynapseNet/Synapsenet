@@ -2,6 +2,7 @@
 #include "crypto/crypto.h"
 #include "infrastructure/messages.h"
 #include <cassert>
+#include <cstdint>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -147,4 +148,3 @@ int main() {
     testPaymentOutputsContainProviderAmount();
     return 0;
 }
-

@@ -1,6 +1,7 @@
 #include "core/transfer.h"
 #include "crypto/crypto.h"
 #include <cassert>
+#include <cstdint>
 #include <chrono>
 #include <filesystem>
 #include <string>

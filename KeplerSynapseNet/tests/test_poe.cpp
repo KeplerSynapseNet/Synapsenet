@@ -3,6 +3,7 @@
 #include "core/poe_v1_engine.h"
 #include "crypto/crypto.h"
 #include <cassert>
+#include <cstdint>
 #include <cstring>
 #include <chrono>
 #include <filesystem>
