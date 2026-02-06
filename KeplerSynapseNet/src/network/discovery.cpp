@@ -7,6 +7,7 @@
 #include <atomic>
 #include <random>
 #include <algorithm>
+#include <cstring>
 #include <ctime>
 #include <fstream>
 #include <sstream>

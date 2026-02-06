@@ -74,6 +74,25 @@ if(NOT CURSES_FOUND)
     endif()
 endif()
 if(NOT CURSES_FOUND)
+    find_path(CURSES_INCLUDE_DIR
+        NAMES
+            ncurses.h
+            curses.h
+        PATH_SUFFIXES
+            ncurses
+    )
+    find_library(CURSES_LIBRARIES
+        NAMES
+            ncursesw
+            ncurses
+            curses
+            pdcurses
+    )
+    if(CURSES_INCLUDE_DIR AND CURSES_LIBRARIES)
+        set(CURSES_FOUND TRUE)
+    endif()
+endif()
+if(NOT CURSES_FOUND)
     message(FATAL_ERROR "curses/ncurses library not found. Install with: 'brew install ncurses' (macOS), 'apt-get install libncurses-dev' (Linux), or 'pacman -S ncurses' (MSYS2)")
 endif()
 
