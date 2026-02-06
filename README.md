@@ -25,10 +25,18 @@ SynapseNet is a local-first AI network where nodes contribute and validate knowl
 ## Quick Start
 
 ```bash
-TERM=xterm-256color ./KeplerSynapseNet/build/synapsed
+TERM=xterm-256color ./build/synapsed
 ```
 
 ## Build
+
+### CI
+
+GitHub Actions runs:
+- Linux + macOS build + tests (llama.cpp OFF for speed)
+- Linux build with llama.cpp
+- Windows build + tests (MSYS2)
+- Docker build (tests run during image build)
 
 Common requirements:
 - CMake 3.16+
@@ -41,10 +49,9 @@ Common requirements:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential cmake git libncurses-dev sqlite3
+sudo apt-get install -y build-essential cmake git libncurses-dev libsqlite3-dev
 
-cd KeplerSynapseNet
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DUSE_LLAMA_CPP=OFF -DBUILD_TESTS=ON
+cmake -S KeplerSynapseNet -B build -DCMAKE_BUILD_TYPE=Release -DUSE_LLAMA_CPP=OFF -DBUILD_TESTS=ON
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
@@ -54,8 +61,7 @@ ctest --test-dir build --output-on-failure
 ```bash
 brew install cmake ncurses sqlite3
 
-cd KeplerSynapseNet
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DUSE_LLAMA_CPP=OFF -DBUILD_TESTS=ON
+cmake -S KeplerSynapseNet -B build -DCMAKE_BUILD_TYPE=Release -DUSE_LLAMA_CPP=OFF -DBUILD_TESTS=ON
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
@@ -65,13 +71,36 @@ ctest --test-dir build --output-on-failure
 1. Install WSL2 + Ubuntu.
 2. Open Ubuntu and follow the Linux build steps above.
 
+### Windows (MSYS2)
+
+1. Install MSYS2: https://www.msys2.org
+2. Open the **MSYS2 MSYS** shell and install deps:
+
+```bash
+pacman -Syu
+pacman -S --needed base-devel cmake ninja pkgconf git ncurses sqlite
+```
+
+3. Configure + build + test:
+
+```bash
+cmake -S KeplerSynapseNet -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DUSE_LLAMA_CPP=OFF \
+  -DUSE_SECP256K1=OFF \
+  -DBUILD_PRIVACY=OFF \
+  -DBUILD_IDE=OFF \
+  -DBUILD_TESTS=ON
+cmake --build build --parallel 2
+ctest --test-dir build --output-on-failure --parallel 2
+```
+
 ### Docker (Windows/macOS/Linux fallback)
 
 This builds **Linux** binaries inside a container (useful on Windows when WSL2 is not available or fails).
 
 ```bash
-cd KeplerSynapseNet
-docker build -t keplersynapsenet:local .
+docker build -f KeplerSynapseNet/Dockerfile -t keplersynapsenet:local KeplerSynapseNet
 # or multi-arch
 # docker buildx build --platform linux/amd64,linux/arm64 -t keplersynapsenet:local --load .
 

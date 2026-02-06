@@ -151,3 +151,54 @@ jobs:
       run: |
         echo "=== TODO/FIXME items found ==="
         grep -r "TODO\|FIXME" --include="*.cpp" --include="*.h" KeplerSynapseNet/src/ || echo "No TODOs found"
+
+  build-windows:
+    runs-on: windows-latest
+    name: build (windows-latest, msys2)
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up MSYS2
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MSYS
+        update: true
+        install: >-
+          base-devel
+          cmake
+          ninja
+          pkgconf
+          git
+          ncurses
+          sqlite
+
+    - name: Configure CMake (MSYS2)
+      shell: msys2 {0}
+      run: |
+        cmake -S KeplerSynapseNet -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DUSE_LLAMA_CPP=OFF \
+          -DUSE_SECP256K1=OFF \
+          -DBUILD_PRIVACY=OFF \
+          -DBUILD_IDE=OFF \
+          -DBUILD_TESTS=ON
+
+    - name: Build (MSYS2)
+      shell: msys2 {0}
+      run: |
+        cmake --build build --config Release --parallel 2
+
+    - name: Run tests (MSYS2)
+      shell: msys2 {0}
+      run: |
+        ctest --test-dir build --output-on-failure --parallel 2
+
+  docker-build:
+    runs-on: ubuntu-latest
+    name: Docker build (KeplerSynapseNet)
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Build Docker image (runs tests during build)
+      run: |
+        docker build -f KeplerSynapseNet/Dockerfile -t synapsenet:ci KeplerSynapseNet
