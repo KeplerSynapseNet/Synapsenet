@@ -11,6 +11,7 @@
 #include <functional>
 #include <future>
 #include <chrono>
+#include <climits>
 #include <memory>
 #include <algorithm>
 

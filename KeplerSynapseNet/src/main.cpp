@@ -39,7 +39,9 @@
 #include "core/transfer.h"
 #include "core/consensus.h"
 #include "core/poe_v1_engine.h"
+#if SYNAPSE_BUILD_TUI
 #include "tui/tui.h"
+#endif
 #include "network/network.h"
 #include "network/discovery.h"
 #include "model/model_loader.h"
@@ -3153,6 +3155,10 @@ std::string handleRpcNodeDiscoveryStats(const std::string& paramsJson) {
     }
 
     int runWithTUI() {
+#if !SYNAPSE_BUILD_TUI
+        std::cerr << "TUI support was disabled at build time; reconfigure with -DBUILD_TUI=ON.\n";
+        return runDaemon();
+#else
         // Check terminal capabilities first
         const char* term = std::getenv("TERM");
         bool stdin_tty = isatty(STDIN_FILENO);
@@ -3750,6 +3756,7 @@ std::string handleRpcNodeDiscoveryStats(const std::string& paramsJson) {
         utils::Logger::enableConsole(true);
         
         return 0;
+#endif
     }
     
     int runDaemon() {

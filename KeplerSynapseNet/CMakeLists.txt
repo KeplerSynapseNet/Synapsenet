@@ -10,6 +10,11 @@ option(USE_SECP256K1 "Use libsecp256k1 for signatures" ON)
 option(BUILD_PRIVACY "Build with privacy layer" OFF)
 option(BUILD_TESTS "Build tests" ON)
 option(BUILD_IDE "Build SynapseNet terminal IDE (crush fork)" ON)
+set(BUILD_TUI_DEFAULT ON)
+if(WIN32)
+    set(BUILD_TUI_DEFAULT OFF)
+endif()
+option(BUILD_TUI "Build terminal UI (ncurses)" ${BUILD_TUI_DEFAULT})
 
 if(USE_LLAMA_CPP)
     if(EXISTS ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt)
@@ -56,44 +61,46 @@ endif()
 
 # Find and require curses/ncurses (TUI dependency).
 # NOTE: On some Windows environments (e.g. MSYS2) CMake's FindCurses can be flaky,
-# so we fall back to pkg-config when needed.
-if(WIN32)
-    set(CURSES_NEED_NCURSES TRUE)
-    set(CURSES_NEED_WIDE TRUE)
-endif()
-find_package(Curses QUIET)
-if(NOT CURSES_FOUND)
-    find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(NCURSES QUIET ncursesw ncurses)
-        if(NCURSES_FOUND)
-            set(CURSES_FOUND TRUE)
-            set(CURSES_LIBRARIES ${NCURSES_LIBRARIES})
-            set(CURSES_INCLUDE_DIR ${NCURSES_INCLUDE_DIRS})
+# so we fall back to pkg-config and a manual search when needed.
+if(BUILD_TUI)
+    if(WIN32)
+        set(CURSES_NEED_NCURSES TRUE)
+        set(CURSES_NEED_WIDE TRUE)
+    endif()
+    find_package(Curses QUIET)
+    if(NOT CURSES_FOUND)
+        find_package(PkgConfig QUIET)
+        if(PkgConfig_FOUND)
+            pkg_check_modules(NCURSES QUIET ncursesw ncurses)
+            if(NCURSES_FOUND)
+                set(CURSES_FOUND TRUE)
+                set(CURSES_LIBRARIES ${NCURSES_LIBRARIES})
+                set(CURSES_INCLUDE_DIR ${NCURSES_INCLUDE_DIRS})
+            endif()
         endif()
     endif()
-endif()
-if(NOT CURSES_FOUND)
-    find_path(CURSES_INCLUDE_DIR
-        NAMES
-            ncurses.h
-            curses.h
-        PATH_SUFFIXES
-            ncurses
-    )
-    find_library(CURSES_LIBRARIES
-        NAMES
-            ncursesw
-            ncurses
-            curses
-            pdcurses
-    )
-    if(CURSES_INCLUDE_DIR AND CURSES_LIBRARIES)
-        set(CURSES_FOUND TRUE)
+    if(NOT CURSES_FOUND)
+        find_path(CURSES_INCLUDE_DIR
+            NAMES
+                ncurses.h
+                curses.h
+            PATH_SUFFIXES
+                ncurses
+        )
+        find_library(CURSES_LIBRARIES
+            NAMES
+                ncursesw
+                ncurses
+                curses
+                pdcurses
+        )
+        if(CURSES_INCLUDE_DIR AND CURSES_LIBRARIES)
+            set(CURSES_FOUND TRUE)
+        endif()
     endif()
-endif()
-if(NOT CURSES_FOUND)
-    message(FATAL_ERROR "curses/ncurses library not found. Install with: 'brew install ncurses' (macOS), 'apt-get install libncurses-dev' (Linux), or 'pacman -S ncurses' (MSYS2)")
+    if(NOT CURSES_FOUND)
+        message(FATAL_ERROR "curses/ncurses library not found. Install with: 'brew install ncurses' (macOS), 'apt-get install libncurses-dev' (Linux), or 'pacman -S ncurses' (MSYS2)")
+    endif()
 endif()
 
 # Find SQLite3 with better error handling
@@ -114,7 +121,7 @@ endif()
 
 include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(${CMAKE_SOURCE_DIR}/src)
-if(CURSES_FOUND)
+if(BUILD_TUI AND CURSES_FOUND)
     include_directories(${CURSES_INCLUDE_DIR})
 endif()
 if(USE_LLAMA_CPP)
@@ -123,7 +130,10 @@ endif()
 
 # Source files
 file(GLOB_RECURSE CORE_SOURCES "src/core/*.cpp")
-file(GLOB_RECURSE TUI_SOURCES "src/tui/*.cpp")
+set(TUI_SOURCES)
+if(BUILD_TUI)
+    file(GLOB_RECURSE TUI_SOURCES "src/tui/*.cpp")
+endif()
 file(GLOB_RECURSE MODEL_SOURCES "src/model/*.cpp")
 file(GLOB_RECURSE NETWORK_SOURCES "src/network/*.cpp")
 file(GLOB_RECURSE CRYPTO_SOURCES "src/crypto/*.cpp")
@@ -156,10 +166,11 @@ endif()
 
 add_library(synapsed_core STATIC ${BASE_SOURCES})
 
-target_link_libraries(synapsed_core PUBLIC
-    Threads::Threads
-    ${CURSES_LIBRARIES}
-)
+target_link_libraries(synapsed_core PUBLIC Threads::Threads)
+if(BUILD_TUI)
+    target_link_libraries(synapsed_core PUBLIC ${CURSES_LIBRARIES})
+endif()
+target_compile_definitions(synapsed_core PUBLIC SYNAPSE_BUILD_TUI=$<BOOL:${BUILD_TUI}>)
 
 if(USE_SECP256K1 AND HAS_SECP256K1)
     target_compile_definitions(synapsed_core PUBLIC SYNAPSE_USE_SECP256K1=1)
