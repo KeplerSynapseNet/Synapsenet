@@ -2,6 +2,7 @@
 #include "core/poe_v1_objects.h"
 #include "core/poe_v1_engine.h"
 #include "crypto/crypto.h"
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstring>

@@ -1,6 +1,8 @@
 #include <iostream>
 #include <cassert>
 #include <cstdint>
+#include <cstring>
+#include <type_traits>
 #include <vector>
 #include <string>
 #include <thread>
@@ -19,27 +21,16 @@ namespace test {
 
 class TestFramework {
 public:
-    static void assertEqual(int expected, int actual, const std::string& msg = "") {
-        if (expected != actual) {
-            std::cerr << "FAIL: " << msg << " (expected " << expected << ", got " << actual << ")" << std::endl;
-            failCount++;
-        } else {
-            passCount++;
-        }
-    }
-    
-    static void assertEqual(uint64_t expected, uint64_t actual, const std::string& msg = "") {
-        if (expected != actual) {
-            std::cerr << "FAIL: " << msg << " (expected " << expected << ", got " << actual << ")" << std::endl;
-            failCount++;
-        } else {
-            passCount++;
-        }
-    }
-    
-    static void assertEqual(size_t expected, size_t actual, const std::string& msg = "") {
-        if (expected != actual) {
-            std::cerr << "FAIL: " << msg << " (expected " << expected << ", got " << actual << ")" << std::endl;
+    template <typename T, typename U,
+              typename = std::enable_if_t<
+                  std::is_integral_v<T> && std::is_integral_v<U> &&
+                  !std::is_same_v<T, bool> && !std::is_same_v<U, bool>>>
+    static void assertEqual(T expected, U actual, const std::string& msg = "") {
+        using CT = std::common_type_t<T, U>;
+        CT e = static_cast<CT>(expected);
+        CT a = static_cast<CT>(actual);
+        if (e != a) {
+            std::cerr << "FAIL: " << msg << " (expected " << e << ", got " << a << ")" << std::endl;
             failCount++;
         } else {
             passCount++;
