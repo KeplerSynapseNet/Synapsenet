@@ -180,6 +180,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release \
           -DCMAKE_C_COMPILER=gcc \
           -DCMAKE_CXX_COMPILER=g++ \
+          -DBUILD_TUI=OFF \
           -DUSE_LLAMA_CPP=OFF \
           -DUSE_SECP256K1=OFF \
           -DBUILD_PRIVACY=OFF \
