@@ -3,6 +3,8 @@
 #include "screens.h"
 #include <ncurses.h>
 #include <atomic>
+#include <cstdint>
+#include <mutex>
 #include <thread>
 #include <chrono>
 #include <ctime>
