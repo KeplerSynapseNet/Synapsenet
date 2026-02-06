@@ -165,6 +165,7 @@ jobs:
         update: true
         install: >-
           base-devel
+          gcc
           cmake
           ninja
           pkgconf
@@ -177,6 +178,8 @@ jobs:
       run: |
         cmake -S KeplerSynapseNet -B build -G Ninja \
           -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_C_COMPILER=gcc \
+          -DCMAKE_CXX_COMPILER=g++ \
           -DUSE_LLAMA_CPP=OFF \
           -DUSE_SECP256K1=OFF \
           -DBUILD_PRIVACY=OFF \
