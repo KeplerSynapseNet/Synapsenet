@@ -5,6 +5,7 @@
 #include <set>
 #include <queue>
 #include <mutex>
+#include <condition_variable>
 #include <memory>
 #include <chrono>
 #include <atomic>

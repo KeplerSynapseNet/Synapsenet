@@ -1,7 +1,12 @@
 #include "database/database.h"
-#include <sqlite3.h>
+#include <algorithm>
+#include <map>
 #include <mutex>
 #include <stdexcept>
+
+#if SYNAPSE_HAVE_SQLITE3
+#include <sqlite3.h>
+#endif
 
 namespace synapse {
 namespace database {
@@ -27,6 +32,7 @@ void WriteBatch::clear() {
     impl_->dels.clear();
 }
 
+#if SYNAPSE_HAVE_SQLITE3
 struct Iterator::Impl {
     sqlite3_stmt* stmt = nullptr;
     bool valid_ = false;
@@ -453,6 +459,272 @@ bool Database::clear() {
     if (!impl_->db) return false;
     return sqlite3_exec(impl_->db, "DELETE FROM kv;", nullptr, nullptr, nullptr) == SQLITE_OK;
 }
+
+#else  // SYNAPSE_HAVE_SQLITE3
+
+struct Iterator::Impl {
+    std::vector<std::pair<std::string, std::vector<uint8_t>>> entries;
+    size_t index = 0;
+    bool valid_ = false;
+};
+
+Iterator::Iterator() : impl_(std::make_unique<Impl>()) {}
+Iterator::~Iterator() = default;
+
+void Iterator::seekToFirst() {
+    if (impl_->entries.empty()) {
+        impl_->valid_ = false;
+        impl_->index = 0;
+        return;
+    }
+    impl_->index = 0;
+    impl_->valid_ = true;
+}
+
+void Iterator::seekToLast() {
+    if (impl_->entries.empty()) {
+        impl_->valid_ = false;
+        impl_->index = 0;
+        return;
+    }
+    impl_->index = impl_->entries.size() - 1;
+    impl_->valid_ = true;
+}
+
+void Iterator::seek(const std::string& key) {
+    auto it = std::lower_bound(
+        impl_->entries.begin(),
+        impl_->entries.end(),
+        key,
+        [](const auto& a, const std::string& k) { return a.first < k; }
+    );
+    if (it == impl_->entries.end()) {
+        impl_->valid_ = false;
+        impl_->index = impl_->entries.size();
+        return;
+    }
+    impl_->index = static_cast<size_t>(it - impl_->entries.begin());
+    impl_->valid_ = true;
+}
+
+bool Iterator::valid() const { return impl_->valid_; }
+
+void Iterator::next() {
+    if (!impl_->valid_) return;
+    if (impl_->index + 1 >= impl_->entries.size()) {
+        impl_->valid_ = false;
+        impl_->index = impl_->entries.size();
+        return;
+    }
+    impl_->index += 1;
+    impl_->valid_ = true;
+}
+
+void Iterator::prev() {
+    if (!impl_->valid_) return;
+    if (impl_->index == 0 || impl_->entries.empty()) {
+        impl_->valid_ = false;
+        impl_->index = 0;
+        return;
+    }
+    impl_->index -= 1;
+    impl_->valid_ = true;
+}
+
+std::string Iterator::key() const {
+    if (!impl_->valid_ || impl_->index >= impl_->entries.size()) return {};
+    return impl_->entries[impl_->index].first;
+}
+
+std::vector<uint8_t> Iterator::value() const {
+    if (!impl_->valid_ || impl_->index >= impl_->entries.size()) return {};
+    return impl_->entries[impl_->index].second;
+}
+
+struct Database::Impl {
+    std::map<std::string, std::vector<uint8_t>> kv;
+    std::vector<std::map<std::string, std::vector<uint8_t>>> txStack;
+    std::string path;
+    mutable std::mutex mtx;
+    bool isOpen = false;
+};
+
+Database::Database() : impl_(std::make_unique<Impl>()) {}
+
+Database::~Database() { close(); }
+
+bool Database::open(const std::string& path) {
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    if (impl_->isOpen) return false;
+    impl_->path = path;
+    impl_->kv.clear();
+    impl_->txStack.clear();
+    impl_->isOpen = true;
+    return true;
+}
+
+void Database::close() {
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    impl_->isOpen = false;
+    impl_->txStack.clear();
+}
+
+bool Database::isOpen() const { return impl_->isOpen; }
+
+bool Database::put(const std::string& key, const std::vector<uint8_t>& value) {
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    if (!impl_->isOpen) return false;
+    impl_->kv[key] = value;
+    return true;
+}
+
+bool Database::put(const std::string& key, const std::string& value) {
+    return put(key, std::vector<uint8_t>(value.begin(), value.end()));
+}
+
+std::vector<uint8_t> Database::get(const std::string& key) const {
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    if (!impl_->isOpen) return {};
+    auto it = impl_->kv.find(key);
+    if (it == impl_->kv.end()) return {};
+    return it->second;
+}
+
+std::string Database::getString(const std::string& key) const {
+    auto v = get(key);
+    return std::string(v.begin(), v.end());
+}
+
+bool Database::del(const std::string& key) {
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    if (!impl_->isOpen) return false;
+    return impl_->kv.erase(key) > 0;
+}
+
+bool Database::exists(const std::string& key) const {
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    if (!impl_->isOpen) return false;
+    return impl_->kv.find(key) != impl_->kv.end();
+}
+
+bool Database::write(WriteBatch& batch) {
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    if (!impl_->isOpen) return false;
+    for (const auto& [key, value] : batch.impl_->puts) {
+        impl_->kv[key] = value;
+    }
+    for (const auto& key : batch.impl_->dels) {
+        impl_->kv.erase(key);
+    }
+    batch.clear();
+    return true;
+}
+
+std::unique_ptr<Iterator> Database::newIterator() const {
+    auto iter = std::make_unique<Iterator>();
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    iter->impl_->entries.reserve(impl_->kv.size());
+    for (const auto& [k, v] : impl_->kv) {
+        iter->impl_->entries.emplace_back(k, v);
+    }
+    iter->impl_->valid_ = false;
+    iter->impl_->index = 0;
+    return iter;
+}
+
+void Database::forEach(
+    const std::string& prefix,
+    std::function<bool(const std::string&, const std::vector<uint8_t>&)> fn
+) const {
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    if (!impl_->isOpen) return;
+    for (const auto& [k, v] : impl_->kv) {
+        if (!prefix.empty() && k.rfind(prefix, 0) != 0) continue;
+        if (!fn(k, v)) break;
+    }
+}
+
+std::vector<std::string> Database::keys(const std::string& prefix) const {
+    std::vector<std::string> out;
+    forEach(prefix, [&out](const std::string& k, const std::vector<uint8_t>&) {
+        out.push_back(k);
+        return true;
+    });
+    return out;
+}
+
+size_t Database::count(const std::string& prefix) const {
+    size_t cnt = 0;
+    forEach(prefix, [&cnt](const std::string&, const std::vector<uint8_t>&) {
+        ++cnt;
+        return true;
+    });
+    return cnt;
+}
+
+bool Database::compact() { return true; }
+
+std::string Database::getPath() const { return impl_->path; }
+
+uint64_t Database::size() const {
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    uint64_t sz = 0;
+    for (const auto& [k, v] : impl_->kv) {
+        sz += static_cast<uint64_t>(k.size());
+        sz += static_cast<uint64_t>(v.size());
+    }
+    return sz;
+}
+
+bool Database::backup(const std::string&) { return false; }
+bool Database::restore(const std::string&) { return false; }
+
+bool Database::beginTransaction() {
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    if (!impl_->isOpen) return false;
+    impl_->txStack.push_back(impl_->kv);
+    return true;
+}
+
+bool Database::commitTransaction() {
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    if (impl_->txStack.empty()) return false;
+    impl_->txStack.pop_back();
+    return true;
+}
+
+bool Database::rollbackTransaction() {
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    if (impl_->txStack.empty()) return false;
+    impl_->kv = std::move(impl_->txStack.back());
+    impl_->txStack.pop_back();
+    return true;
+}
+
+std::vector<std::pair<std::string, std::vector<uint8_t>>> Database::getRange(
+    const std::string& startKey,
+    const std::string& endKey,
+    size_t limit
+) const {
+    std::vector<std::pair<std::string, std::vector<uint8_t>>> out;
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    if (!impl_->isOpen) return out;
+    auto it = impl_->kv.lower_bound(startKey);
+    for (; it != impl_->kv.end() && it->first < endKey; ++it) {
+        out.emplace_back(it->first, it->second);
+        if (limit > 0 && out.size() >= limit) break;
+    }
+    return out;
+}
+
+bool Database::clear() {
+    std::lock_guard<std::mutex> lock(impl_->mtx);
+    if (!impl_->isOpen) return false;
+    impl_->kv.clear();
+    return true;
+}
+
+#endif  // SYNAPSE_HAVE_SQLITE3
 
 }
 }
