@@ -333,44 +333,100 @@ std::vector<Validator> Consensus::getEligibleValidators() const {
 
 std::vector<Validator> Consensus::selectValidators(uint64_t eventId, uint32_t count) const {
     std::lock_guard<std::mutex> lock(impl_->mtx);
-    
+
     std::vector<Validator> eligible;
     for (const auto& [addr, val] : impl_->validators) {
         if (val.eligible) eligible.push_back(val);
     }
-    
+
+    std::sort(eligible.begin(), eligible.end(), [](const Validator& a, const Validator& b) {
+        if (a.pubKey != b.pubKey) {
+            return std::lexicographical_compare(a.pubKey.begin(), a.pubKey.end(), b.pubKey.begin(), b.pubKey.end());
+        }
+        return a.address < b.address;
+    });
+
     if (eligible.size() <= count) return eligible;
-    
-    std::seed_seq seed{static_cast<uint32_t>(eventId), 
-                       static_cast<uint32_t>(eventId >> 32)};
-    std::mt19937 rng(seed);
-    
-    std::vector<double> weights;
-    double totalWeight = 0;
+
+    std::vector<uint64_t> weights;
+    weights.reserve(eligible.size());
+    uint64_t totalWeight = 0;
     for (const auto& val : eligible) {
-        double weight = std::sqrt(static_cast<double>(val.stake)) * val.reputation;
+        double rep = val.reputation;
+        if (!(rep > 0.0)) rep = 0.0;
+        long double repScaledLd = static_cast<long double>(rep) * 1000000.0L;
+        if (repScaledLd < 1.0L) repScaledLd = 1.0L;
+        if (repScaledLd > static_cast<long double>(UINT64_MAX)) repScaledLd = static_cast<long double>(UINT64_MAX);
+        uint64_t repScaled = static_cast<uint64_t>(repScaledLd);
+
+        uint64_t stakeWeight = std::max<uint64_t>(1, val.stake);
+        unsigned __int128 combined = static_cast<unsigned __int128>(stakeWeight) * static_cast<unsigned __int128>(repScaled);
+        uint64_t weight = combined > static_cast<unsigned __int128>(UINT64_MAX)
+            ? UINT64_MAX
+            : static_cast<uint64_t>(combined);
+        if (weight == 0) weight = 1;
         weights.push_back(weight);
-        totalWeight += weight;
+        if (UINT64_MAX - totalWeight < weight) totalWeight = UINT64_MAX;
+        else totalWeight += weight;
     }
-    
+
+    if (totalWeight == 0) return {};
+
     std::vector<Validator> selected;
+    selected.reserve(count);
     std::vector<bool> used(eligible.size(), false);
-    
-    for (uint32_t i = 0; i < count && i < eligible.size(); i++) {
-        double r = std::uniform_real_distribution<double>(0, totalWeight)(rng);
-        double cumulative = 0;
-        for (size_t j = 0; j < eligible.size(); j++) {
+
+    for (uint32_t i = 0; i < count && i < eligible.size(); ++i) {
+        if (totalWeight == 0) break;
+
+        std::vector<uint8_t> entropy;
+        entropy.reserve(24);
+        writeU64(entropy, eventId);
+        writeU32(entropy, i);
+        writeU64(entropy, static_cast<uint64_t>(eligible.size()));
+        crypto::Hash256 pickHash = crypto::sha256(entropy.data(), entropy.size());
+
+        uint64_t r = 0;
+        for (int b = 0; b < 8; ++b) r |= static_cast<uint64_t>(pickHash[static_cast<size_t>(b)]) << (8 * b);
+        uint64_t target = r % totalWeight;
+
+        size_t chosen = eligible.size();
+        uint64_t cumulative = 0;
+        for (size_t j = 0; j < eligible.size(); ++j) {
             if (used[j]) continue;
-            cumulative += weights[j];
-            if (r <= cumulative) {
-                selected.push_back(eligible[j]);
-                totalWeight -= weights[j];
-                used[j] = true;
+            uint64_t w = weights[j];
+            if (UINT64_MAX - cumulative < w) cumulative = UINT64_MAX;
+            else cumulative += w;
+            if (target < cumulative) {
+                chosen = j;
                 break;
             }
         }
+
+        if (chosen == eligible.size()) {
+            for (size_t j = 0; j < eligible.size(); ++j) {
+                if (!used[j]) {
+                    chosen = j;
+                    break;
+                }
+            }
+        }
+
+        if (chosen == eligible.size()) break;
+
+        selected.push_back(eligible[chosen]);
+        used[chosen] = true;
+        if (weights[chosen] >= totalWeight) totalWeight = 0;
+        else totalWeight -= weights[chosen];
     }
-    
+
+    std::sort(selected.begin(), selected.end(), [](const Validator& a, const Validator& b) {
+        if (a.pubKey != b.pubKey) {
+            return std::lexicographical_compare(a.pubKey.begin(), a.pubKey.end(), b.pubKey.begin(), b.pubKey.end());
+        }
+        return a.address < b.address;
+    });
+
     return selected;
 }
 

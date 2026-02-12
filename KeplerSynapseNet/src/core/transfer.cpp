@@ -38,11 +38,14 @@ static void writeString(std::vector<uint8_t>& out, const std::string& s) {
     out.insert(out.end(), s.begin(), s.end());
 }
 
-static std::string readString(const uint8_t*& p) {
-    uint32_t len = readU32(p); p += 4;
-    std::string s(reinterpret_cast<const char*>(p), len);
+static bool readStringSafe(const uint8_t*& p, const uint8_t* end, std::string& out) {
+    if (static_cast<size_t>(end - p) < 4) return false;
+    uint32_t len = readU32(p);
+    p += 4;
+    if (static_cast<size_t>(end - p) < static_cast<size_t>(len)) return false;
+    out.assign(reinterpret_cast<const char*>(p), len);
     p += len;
-    return s;
+    return true;
 }
 
 static bool parseUtxoKey(const std::string& key, crypto::Hash256& txHashOut, uint32_t& outputIndexOut) {
@@ -93,6 +96,10 @@ static bool safeAddU64(uint64_t a, uint64_t b, uint64_t& out) {
     return true;
 }
 
+static constexpr size_t MAX_TX_INPUTS = 1024;
+static constexpr size_t MAX_TX_OUTPUTS = 1024;
+static constexpr uint64_t MAX_TX_FUTURE_SKEW_SECONDS = 2 * 60 * 60;
+
 std::vector<uint8_t> TxInput::serialize() const {
     std::vector<uint8_t> out;
     out.insert(out.end(), prevTxHash.begin(), prevTxHash.end());
@@ -124,8 +131,11 @@ TxOutput TxOutput::deserialize(const std::vector<uint8_t>& data) {
     TxOutput outp;
     if (data.size() < 12) return outp;
     const uint8_t* p = data.data();
-    outp.amount = readU64(p); p += 8;
-    outp.address = readString(p);
+    const uint8_t* end = data.data() + data.size();
+    outp.amount = readU64(p);
+    p += 8;
+    if (!readStringSafe(p, end, outp.address)) return TxOutput{};
+    if (p != end) return TxOutput{};
     return outp;
 }
 
@@ -156,27 +166,58 @@ std::vector<uint8_t> Transaction::serialize() const {
 Transaction Transaction::deserialize(const std::vector<uint8_t>& data) {
     Transaction tx;
     if (data.size() < 32 + 8 + 1 + 8 + 4) return tx;
-    
+
     const uint8_t* p = data.data();
-    std::memcpy(tx.txid.data(), p, 32); p += 32;
-    tx.timestamp = readU64(p); p += 8;
+    const uint8_t* end = data.data() + data.size();
+    auto need = [&](size_t n) -> bool {
+        return static_cast<size_t>(end - p) >= n;
+    };
+
+    if (!need(32)) return Transaction{};
+    std::memcpy(tx.txid.data(), p, 32);
+    p += 32;
+
+    if (!need(8 + 1 + 8 + 4)) return Transaction{};
+    tx.timestamp = readU64(p);
+    p += 8;
     tx.status = static_cast<TxStatus>(*p++);
-    tx.fee = readU64(p); p += 8;
-    
-    uint32_t inputCount = readU32(p); p += 4;
+    tx.fee = readU64(p);
+    p += 8;
+
+    uint32_t inputCount = readU32(p);
+    p += 4;
+    if (inputCount > MAX_TX_INPUTS) return Transaction{};
+    tx.inputs.reserve(inputCount);
     for (uint32_t i = 0; i < inputCount; i++) {
-        uint32_t inpLen = readU32(p); p += 4;
-        std::vector<uint8_t> inpData(p, p + inpLen); p += inpLen;
+        if (!need(4)) return Transaction{};
+        uint32_t inpLen = readU32(p);
+        p += 4;
+        if (inpLen != 32 + 4 + 64 + 33) return Transaction{};
+        if (!need(inpLen)) return Transaction{};
+        std::vector<uint8_t> inpData(p, p + inpLen);
+        p += inpLen;
         tx.inputs.push_back(TxInput::deserialize(inpData));
     }
-    
-    uint32_t outputCount = readU32(p); p += 4;
+
+    if (!need(4)) return Transaction{};
+    uint32_t outputCount = readU32(p);
+    p += 4;
+    if (outputCount > MAX_TX_OUTPUTS) return Transaction{};
+    tx.outputs.reserve(outputCount);
     for (uint32_t i = 0; i < outputCount; i++) {
-        uint32_t outpLen = readU32(p); p += 4;
-        std::vector<uint8_t> outpData(p, p + outpLen); p += outpLen;
-        tx.outputs.push_back(TxOutput::deserialize(outpData));
+        if (!need(4)) return Transaction{};
+        uint32_t outpLen = readU32(p);
+        p += 4;
+        if (outpLen < 12 || outpLen > 4096) return Transaction{};
+        if (!need(outpLen)) return Transaction{};
+        std::vector<uint8_t> outpData(p, p + outpLen);
+        p += outpLen;
+        TxOutput outp = TxOutput::deserialize(outpData);
+        if (outp.address.empty()) return Transaction{};
+        tx.outputs.push_back(std::move(outp));
     }
-    
+
+    if (p != end) return Transaction{};
     return tx;
 }
 
@@ -293,7 +334,7 @@ bool TransferManager::open(const std::string& dbPath) {
         if (amount == 0) return true;
         if (value.size() < 12 + static_cast<size_t>(addrLen)) return true;
         std::string address(reinterpret_cast<const char*>(p), addrLen);
-        if (address.empty()) return true;
+        if (!isValidNgtAddress(address)) return true;
 
         UTXO utxo;
         utxo.txHash = txHash;
@@ -305,8 +346,20 @@ bool TransferManager::open(const std::string& dbPath) {
         return true;
     });
 
-    if (impl_->utxoSet.empty() && impl_->totalSupply_ > 0) {
-        impl_->totalSupply_ = 0;
+    uint64_t rebuiltSupply = 0;
+    bool supplyOverflow = false;
+    for (const auto& [_, utxos] : impl_->utxoSet) {
+        for (const auto& utxo : utxos) {
+            if (!safeAddU64(rebuiltSupply, utxo.amount, rebuiltSupply)) {
+                supplyOverflow = true;
+                break;
+            }
+        }
+        if (supplyOverflow) break;
+    }
+    if (supplyOverflow) return false;
+    if (impl_->totalSupply_ != rebuiltSupply) {
+        impl_->totalSupply_ = rebuiltSupply;
         std::vector<uint8_t> supplyBuf;
         writeU64(supplyBuf, impl_->totalSupply_);
         impl_->db.put("meta:totalSupply", supplyBuf);
@@ -317,6 +370,12 @@ bool TransferManager::open(const std::string& dbPath) {
         (void)key;
         Transaction tx = Transaction::deserialize(value);
         if (tx.txid == crypto::Hash256{}) return true;
+        if (tx.computeHash() != tx.txid) return true;
+        if (tx.status != TxStatus::PENDING &&
+            tx.status != TxStatus::CONFIRMED &&
+            tx.status != TxStatus::REJECTED) {
+            return true;
+        }
         loadedTxs.push_back(std::move(tx));
         return true;
     });
@@ -336,6 +395,14 @@ bool TransferManager::open(const std::string& dbPath) {
         } else {
             impl_->recentTxs = std::move(loadedTxs);
         }
+    }
+
+    uint64_t minCounter = static_cast<uint64_t>(impl_->confirmed.size() + impl_->pending.size());
+    if (impl_->txCounter < minCounter) {
+        impl_->txCounter = minCounter;
+        std::vector<uint8_t> counterBuf;
+        writeU64(counterBuf, impl_->txCounter);
+        impl_->db.put("meta:txCounter", counterBuf);
     }
     
     return true;
@@ -431,22 +498,25 @@ bool TransferManager::submitTransaction(const Transaction& tx) {
     if (!verifyTransaction(tx)) return false;
 
     if (impl_->mempool.size() >= impl_->config.maxMempoolSize) {
+        auto feeRateLess = [](const Transaction& lhs, const Transaction& rhs) -> bool {
+            const size_t lhsSize = std::max<size_t>(1, lhs.serialize().size());
+            const size_t rhsSize = std::max<size_t>(1, rhs.serialize().size());
+            unsigned __int128 lhsRate = static_cast<unsigned __int128>(lhs.fee) * static_cast<unsigned __int128>(rhsSize);
+            unsigned __int128 rhsRate = static_cast<unsigned __int128>(rhs.fee) * static_cast<unsigned __int128>(lhsSize);
+            if (lhsRate != rhsRate) return lhsRate < rhsRate;
+            if (lhs.fee != rhs.fee) return lhs.fee < rhs.fee;
+            if (lhs.timestamp != rhs.timestamp) return lhs.timestamp < rhs.timestamp;
+            return crypto::toHex(lhs.txid) < crypto::toHex(rhs.txid);
+        };
+
         auto worstIt = impl_->mempool.begin();
         for (auto it = impl_->mempool.begin(); it != impl_->mempool.end(); ++it) {
             const auto& a = it->second;
             const auto& b = worstIt->second;
-            if (a.fee < b.fee) {
-                worstIt = it;
-            } else if (a.fee == b.fee) {
-                if (a.timestamp < b.timestamp) {
-                    worstIt = it;
-                } else if (a.timestamp == b.timestamp && it->first < worstIt->first) {
-                    worstIt = it;
-                }
-            }
+            if (feeRateLess(a, b)) worstIt = it;
         }
 
-        if (tx.fee <= worstIt->second.fee) return false;
+        if (!feeRateLess(worstIt->second, tx)) return false;
 
         Transaction dropped = worstIt->second;
         std::string dropHex = worstIt->first;
@@ -651,12 +721,21 @@ size_t TransferManager::getUTXOCount(const std::string& address) const {
 
 bool TransferManager::verifyTransaction(const Transaction& tx) const {
     if (tx.inputs.empty() || tx.outputs.empty()) return false;
+    if (tx.inputs.size() > MAX_TX_INPUTS || tx.outputs.size() > MAX_TX_OUTPUTS) return false;
+    if (tx.timestamp == 0) return false;
+    uint64_t nowTs = static_cast<uint64_t>(std::time(nullptr));
+    if (tx.timestamp > nowTs + MAX_TX_FUTURE_SKEW_SECONDS) return false;
     if (tx.computeHash() != tx.txid) return false;
     if (!tx.verify()) return false;
     if (tx.fee < estimateFee(tx.serialize().size())) return false;
 
     std::unordered_set<std::string> seenInputs;
     std::unordered_set<std::string> pendingInputs;
+    for (const auto& [_, pendingTx] : impl_->mempool) {
+        for (const auto& inp : pendingTx.inputs) {
+            pendingInputs.insert(crypto::toHex(inp.prevTxHash) + ":" + std::to_string(inp.outputIndex));
+        }
+    }
     for (const auto& pendingTx : impl_->pending) {
         for (const auto& inp : pendingTx.inputs) {
             pendingInputs.insert(crypto::toHex(inp.prevTxHash) + ":" + std::to_string(inp.outputIndex));

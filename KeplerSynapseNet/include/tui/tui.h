@@ -14,6 +14,7 @@ namespace tui {
 
 enum class Screen {
     BOOT,
+    KEY_BACKUP,
     INIT,
     NETWORK_DISCOVERY,
     SYNCING,

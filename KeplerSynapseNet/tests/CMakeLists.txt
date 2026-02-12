@@ -36,9 +36,29 @@ add_executable(test_transfer test_transfer.cpp)
 target_link_libraries(test_transfer synapsed_core)
 add_test(NAME TransferTests COMMAND test_transfer)
 
+add_executable(test_update_manifest test_update_manifest.cpp)
+target_link_libraries(test_update_manifest synapsed_core)
+add_test(NAME UpdateManifestTests COMMAND test_update_manifest)
+
+add_executable(test_agent_runtime test_agent_runtime.cpp)
+target_link_libraries(test_agent_runtime synapsed_core)
+add_test(NAME AgentRuntimeTests COMMAND test_agent_runtime)
+
+add_executable(test_implant_compatibility test_implant_compatibility.cpp)
+target_link_libraries(test_implant_compatibility synapsed_core)
+add_test(NAME ImplantCompatibilityTests COMMAND test_implant_compatibility)
+
+add_executable(test_consensus test_consensus.cpp)
+target_link_libraries(test_consensus synapsed_core)
+add_test(NAME ConsensusTests COMMAND test_consensus)
+
 add_executable(test_peer_discovery test_peer_discovery.cpp)
 target_link_libraries(test_peer_discovery synapsed_core)
 add_test(NAME PeerDiscoveryTests COMMAND test_peer_discovery)
+
+add_executable(test_network_message test_network_message.cpp)
+target_link_libraries(test_network_message synapsed_core)
+add_test(NAME NetworkMessageTests COMMAND test_network_message)
 
 add_executable(test_remote_model test_remote_model.cpp)
 target_link_libraries(test_remote_model synapsed_core)

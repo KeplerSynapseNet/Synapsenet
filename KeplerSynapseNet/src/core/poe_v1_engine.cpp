@@ -161,6 +161,24 @@ bool PoeV1Engine::open(const std::string& dbPath) {
         }
     }
 
+    {
+        uint64_t actualEntries = static_cast<uint64_t>(impl_->db.count("poe:v1:entry:"));
+        if (impl_->entryCount != actualEntries) {
+            impl_->entryCount = actualEntries;
+            std::vector<uint8_t> cbuf;
+            writeU64LE(cbuf, impl_->entryCount);
+            impl_->db.put("meta:poe_v1:entries", cbuf);
+        }
+
+        uint64_t actualFinalized = static_cast<uint64_t>(impl_->db.count("poe:v1:final:"));
+        if (impl_->finalizedCount != actualFinalized) {
+            impl_->finalizedCount = actualFinalized;
+            std::vector<uint8_t> fbuf;
+            writeU64LE(fbuf, impl_->finalizedCount);
+            impl_->db.put("meta:poe_v1:finalized", fbuf);
+        }
+    }
+
     return true;
 }
 
@@ -415,11 +433,20 @@ bool PoeV1Engine::addVote(const poe_v1::ValidationVoteV1& vote) {
     if (!vote.verifySignature()) return false;
 
     crypto::Hash256 seed{};
+    std::vector<crypto::PublicKey> validators;
+    uint32_t validatorsN = 0;
     {
         std::lock_guard<std::mutex> lock(impl_->mtx);
         seed = impl_->seed;
+        validators = impl_->validators;
+        validatorsN = impl_->cfg.validatorsN;
     }
     if (vote.prevBlockHash != seed) return false;
+    if (validators.empty() || validatorsN == 0) return false;
+
+    auto selected = poe_v1::selectValidators(seed, vote.submitId, validators, validatorsN);
+    if (selected.empty()) return false;
+    if (std::find(selected.begin(), selected.end(), vote.validatorPubKey) == selected.end()) return false;
 
     std::string submitHex = crypto::toHex(vote.submitId);
     std::string validatorHex = crypto::toHex(vote.validatorPubKey);
@@ -429,8 +456,11 @@ bool PoeV1Engine::addVote(const poe_v1::ValidationVoteV1& vote) {
     auto data = vote.serialize();
 
     std::lock_guard<std::mutex> lock(impl_->mtx);
+    if (!impl_->db.exists("poe:v1:entry:" + submitHex)) return false;
+    if (impl_->db.exists("poe:v1:final:" + submitHex)) return false;
     std::string key = "poe:v1:vote:" + submitHex + ":" + validatorHex;
     if (impl_->db.exists(key)) return false;
+    if (impl_->db.exists("poe:v1:voteid:" + voteIdHex)) return false;
     impl_->db.put(key, data);
     impl_->db.put("poe:v1:voteid:" + voteIdHex, data);
     return true;
@@ -586,7 +616,9 @@ std::optional<poe_v1::FinalizationRecordV1> PoeV1Engine::finalize(const crypto::
     std::vector<crypto::PublicKey> validatorSet = getStaticValidators();
     if (validatorSet.empty()) return std::nullopt;
 
-    std::vector<crypto::PublicKey> selected = poe_v1::selectValidators(chainSeed(), submitId, validatorSet, cfg.validatorsN);
+    crypto::Hash256 seed = chainSeed();
+    std::vector<crypto::PublicKey> selected = poe_v1::selectValidators(seed, submitId, validatorSet, cfg.validatorsN);
+    if (cfg.validatorsM == 0 || cfg.validatorsM > selected.size()) return std::nullopt;
     crypto::Hash256 vsetHash = poe_v1::validatorSetHashV1(selected);
 
     std::string prefix = "poe:v1:vote:" + crypto::toHex(submitId) + ":";
@@ -609,7 +641,7 @@ std::optional<poe_v1::FinalizationRecordV1> PoeV1Engine::finalize(const crypto::
         auto v = poe_v1::ValidationVoteV1::deserialize(data);
         if (!v) continue;
         if (v->submitId != submitId) continue;
-        if (v->prevBlockHash != chainSeed()) continue;
+        if (v->prevBlockHash != seed) continue;
         if (!v->verifySignature()) continue;
         if ((v->flags & 0x1u) != 0) return std::nullopt;
         auto it = std::find(selected.begin(), selected.end(), v->validatorPubKey);
@@ -629,10 +661,10 @@ std::optional<poe_v1::FinalizationRecordV1> PoeV1Engine::finalize(const crypto::
 
     poe_v1::FinalizationRecordV1 fin;
     fin.submitId = submitId;
-    fin.prevBlockHash = chainSeed();
+    fin.prevBlockHash = seed;
     fin.validatorSetHash = vsetHash;
     fin.votes = votes;
-    fin.finalizedAt = static_cast<uint64_t>(std::time(nullptr));
+    fin.finalizedAt = entryOpt->timestamp;
 
     {
         std::lock_guard<std::mutex> lock(impl_->mtx);

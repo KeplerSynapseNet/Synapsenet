@@ -1,0 +1,48 @@
+V0.2 Runtime/Update/Implant Minimal Spec
+
+1) UpdateManifest / UpdateBundle
+- Manifest version: `1` only.
+- Required fields: `bundle_id`, `content_hash`, `chunks[] (hash,size)`, `target`, `protocol_min`, `protocol_max`, `signer`, `signature`.
+- Deterministic rules:
+  - Chunks are canonicalized by `(hash,size)` ascending.
+  - `content_hash = sha256(canonical_chunks_encoding)`.
+  - `bundle_id = sha256(version + content_hash + target + protocol_range + signer + domain_tag)`.
+  - Signature is verified over deterministic payload bytes.
+- Strict reject conditions:
+  - unsupported version
+  - invalid protocol range
+  - invalid target format
+  - chunk count/size/hash violations
+  - non-canonical chunk order
+  - content hash mismatch
+  - bundle id mismatch
+  - invalid signature
+
+2) AgentRuntime Sandbox + AgentScore
+- Sandbox policy is deny-by-default.
+- Capability execution is allowed only if capability is in allowlist.
+- Side effects require:
+  - policy-level side effects enabled
+  - explicit side-effect flag on request
+- AgentScore is deterministic and timestamp-driven:
+  - penalties increase penalty points
+  - decay decreases penalty points by fixed interval rule
+  - rewards reduce penalty points
+  - quarantine when score is below threshold
+
+3) Implant Compatibility
+- HAL v1 checks:
+  - expected HAL version
+  - protocol version in allowed range
+  - valid payload size and capabilities set
+- Intent v1 checks:
+  - expected schema version
+  - non-unknown intent type
+  - valid source id
+  - payload hash present
+  - permission checks with default-deny model
+- Install safety gate:
+  - manifest must pass strict validation
+  - protocol overlap required
+  - target must be implant scope (`implant/...`)
+  - if policy requires safety gate, install is denied when gate is not passed

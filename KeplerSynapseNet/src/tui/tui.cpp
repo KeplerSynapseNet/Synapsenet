@@ -48,6 +48,15 @@ static const char* LOGO_KEPLER[] = {
 };
 static const int LOGO_KEPLER_COUNT = 5;
 
+static const char* STARTUP_BANNER[] = {
+    "                                     _   ",
+    " ___ _ _ ___ ___ ___ ___ ___ ___ ___| |_ ",
+    "|_ -| | |   | .'| . |_ -| -_|   | -_|  _|",
+    "|___|_  |_|_|__,|  _|___|___|_|_|___|_|  ",
+    "    |___|       |_|                      "
+};
+static const int STARTUP_BANNER_COUNT = 5;
+
 static std::array<uint8_t, 7> glyph5x7(char c) {
     switch (c) {
         case 'A': return {0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001};
@@ -206,6 +215,15 @@ struct LocalAppState {
     uint64_t webLastDarknetResults = 0;
     std::string webLastError;
     std::mutex webMutex;
+    bool startupKeyDataLoaded = false;
+    bool startupKeyDataAvailable = false;
+    bool startupKeyBackupSaved = false;
+    std::string startupWalletPath;
+    std::string startupWalletAddress;
+    std::string startupPublicKeyHex;
+    std::string startupPrivateKeyHex;
+    std::string startupKeyPromptMessage;
+    std::string startupKeyBackupPath;
     
     // Operation status tracking
     struct OperationStatus {
@@ -260,6 +278,7 @@ struct TUI::Impl {
     uint64_t lastModelScanMs = 0;
     
     void drawBoot();
+    void drawKeyBackup();
     void drawInit();
     void drawNetworkDiscovery();
     void drawSyncing();
@@ -290,6 +309,8 @@ struct TUI::Impl {
     void drawProgressBar(int y, int x, int w, double progress, int color);
     void centerText(int y, const char* text);
     void initDefaultState();
+    void loadStartupKeyData();
+    bool saveStartupKeyBackup(std::string& outPath);
 };
 
 void TUI::Impl::initDefaultState() {
@@ -511,6 +532,15 @@ void TUI::Impl::initDefaultState() {
         state.webLastClearnetResults = 0;
         state.webLastDarknetResults = 0;
         state.webLastError.clear();
+        state.startupKeyDataLoaded = false;
+        state.startupKeyDataAvailable = false;
+        state.startupKeyBackupSaved = false;
+        state.startupWalletPath.clear();
+        state.startupWalletAddress.clear();
+        state.startupPublicKeyHex.clear();
+        state.startupPrivateKeyHex.clear();
+        state.startupKeyPromptMessage.clear();
+        state.startupKeyBackupPath.clear();
         
         // Initialize operation status
         state.currentOperation.operation = "";
@@ -611,18 +641,121 @@ void TUI::Impl::centerText(int y, const char* text) {
     if (sw > 0) mvaddnstr(y, xpos, text, sw);
 }
 
+void TUI::Impl::loadStartupKeyData() {
+    if (state.startupKeyDataLoaded) return;
+
+    state.startupKeyDataLoaded = true;
+    state.startupKeyDataAvailable = false;
+    state.startupKeyBackupSaved = false;
+    state.startupWalletPath.clear();
+    state.startupWalletAddress.clear();
+    state.startupPublicKeyHex.clear();
+    state.startupPrivateKeyHex.clear();
+    state.startupKeyBackupPath.clear();
+
+    std::string dataDir = synapse::utils::Config::instance().getDataDir();
+    if (dataDir.empty()) dataDir = ".";
+    state.startupWalletPath = dataDir + "/wallet.dat";
+
+    std::error_code ec;
+    if (!std::filesystem::exists(state.startupWalletPath, ec)) {
+        state.startupKeyPromptMessage = "No wallet file found yet. Continue to wallet setup.";
+        return;
+    }
+
+    crypto::Keys keys;
+    bool ok = false;
+    try {
+        ok = keys.load(state.startupWalletPath, "");
+    } catch (...) {
+        ok = false;
+    }
+
+    if (!ok) {
+        state.startupKeyPromptMessage = "Wallet file exists but could not be loaded.";
+        return;
+    }
+
+    const auto publicKey = keys.getPublicKey();
+    const auto privateKey = keys.getPrivateKey();
+    if (publicKey.empty() || privateKey.empty()) {
+        state.startupKeyPromptMessage = "Wallet loaded but key material is unavailable.";
+        return;
+    }
+
+    state.startupWalletAddress = keys.getAddress();
+    state.startupPublicKeyHex = synapse::crypto::toHex(publicKey);
+    state.startupPrivateKeyHex = synapse::crypto::toHex(privateKey);
+    state.startupKeyDataAvailable = true;
+    state.startupKeyPromptMessage = "Save these keys to a local backup file now? [Y/N]";
+}
+
+bool TUI::Impl::saveStartupKeyBackup(std::string& outPath) {
+    loadStartupKeyData();
+    if (!state.startupKeyDataAvailable) return false;
+
+    std::filesystem::path walletPath(state.startupWalletPath);
+    std::filesystem::path dataDir = walletPath.parent_path();
+    if (dataDir.empty()) dataDir = ".";
+    std::error_code ec;
+    std::filesystem::create_directories(dataDir, ec);
+
+    std::time_t now = std::time(nullptr);
+    std::tm localTm{};
+#ifdef _WIN32
+    localtime_s(&localTm, &now);
+#else
+    localtime_r(&now, &localTm);
+#endif
+    char localTs[32]{};
+    std::strftime(localTs, sizeof(localTs), "%Y%m%d_%H%M%S", &localTm);
+
+    std::tm utcTm{};
+#ifdef _WIN32
+    gmtime_s(&utcTm, &now);
+#else
+    gmtime_r(&now, &utcTm);
+#endif
+    char utcTs[40]{};
+    std::strftime(utcTs, sizeof(utcTs), "%Y-%m-%dT%H:%M:%SZ", &utcTm);
+
+    std::filesystem::path backupPath = dataDir / ("wallet_keys_backup_" + std::string(localTs) + ".txt");
+    std::ofstream out(backupPath, std::ios::out | std::ios::trunc);
+    if (!out.is_open()) return false;
+
+    out << "SynapseNet Wallet Key Backup\n";
+    out << "GeneratedAtUTC: " << utcTs << "\n";
+    out << "WalletPath: " << state.startupWalletPath << "\n";
+    out << "Address: " << state.startupWalletAddress << "\n";
+    out << "PublicKeyHex: " << state.startupPublicKeyHex << "\n";
+    out << "PrivateKeyHex: " << state.startupPrivateKeyHex << "\n";
+    out.close();
+    if (!out.good()) return false;
+
+    std::filesystem::permissions(
+        backupPath,
+        std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+        std::filesystem::perm_options::replace,
+        ec
+    );
+
+    outPath = backupPath.string();
+    state.startupKeyBackupSaved = true;
+    state.startupKeyBackupPath = outPath;
+    return true;
+}
+
 void TUI::Impl::drawBoot() {
     clear();
-    int row = 1;
+    int row = 2;
 
-    auto dot = renderDotText5x7("SYNAPSENET");
     attron(COLOR_PAIR(5) | A_BOLD);
-    for (const auto& ln : dot) {
-        centerText(row++, ln.c_str());
+    for (int i = 0; i < STARTUP_BANNER_COUNT; i++) {
+        centerText(row++, STARTUP_BANNER[i]);
     }
     attroff(COLOR_PAIR(5) | A_BOLD);
 
-    row += 1;
+    row += 2;
     attron(COLOR_PAIR(6));
     centerText(row++, "Decentralized Intelligence Network v0.1");
     attroff(COLOR_PAIR(6));
@@ -649,6 +782,70 @@ void TUI::Impl::drawBoot() {
 	    drawStatusBar();
 	    ::refresh();
 	}
+
+void TUI::Impl::drawKeyBackup() {
+    loadStartupKeyData();
+
+    clear();
+    int boxW = std::min(100, COLS - 4);
+    int boxH = std::min(26, LINES - 4);
+    int boxX = (COLS - boxW) / 2;
+    int boxY = (LINES - boxH) / 2;
+    if (boxY < 1) boxY = 1;
+
+    attron(COLOR_PAIR(4) | A_BOLD);
+    centerText(boxY - 1 < 0 ? 0 : boxY - 1, "WALLET KEY BACKUP");
+    attroff(COLOR_PAIR(4) | A_BOLD);
+
+    drawBox(boxY, boxX, boxH, boxW, "Startup security check");
+
+    int y = boxY + 2;
+    int innerW = boxW - 6;
+    printClippedLine(y++, boxX + 3, innerW, "Review your wallet key material before node startup.");
+    printClippedLine(y++, boxX + 3, innerW, "Keep backups offline and private.");
+    y++;
+
+    if (state.startupKeyDataAvailable) {
+        printClippedLine(y++, boxX + 3, innerW, "Wallet file:");
+        printClippedLine(y++, boxX + 3, innerW, state.startupWalletPath);
+        y++;
+        printClippedLine(y++, boxX + 3, innerW, "Address:");
+        printClippedLine(y++, boxX + 3, innerW, state.startupWalletAddress.empty() ? "unavailable" : state.startupWalletAddress);
+        y++;
+        printClippedLine(y++, boxX + 3, innerW, "Public key (hex):");
+        printClippedLine(y++, boxX + 3, innerW, state.startupPublicKeyHex);
+        y++;
+        printClippedLine(y++, boxX + 3, innerW, "Private key (hex):");
+        printClippedLine(y++, boxX + 3, innerW, state.startupPrivateKeyHex);
+        y += 2;
+        if (state.startupKeyBackupSaved) {
+            attron(COLOR_PAIR(1));
+            printClippedLine(y++, boxX + 3, innerW, "Backup saved:");
+            printClippedLine(y++, boxX + 3, innerW, state.startupKeyBackupPath);
+            attroff(COLOR_PAIR(1));
+            y++;
+            attron(A_BLINK);
+            printClippedLine(y, boxX + 3, innerW, "Press [ENTER] to continue");
+            attroff(A_BLINK);
+        } else {
+            attron(COLOR_PAIR(2));
+            printClippedLine(y++, boxX + 3, innerW, state.startupKeyPromptMessage);
+            attroff(COLOR_PAIR(2));
+            printClippedLine(y, boxX + 3, innerW, "[Y] Save to .txt and continue   [N] Continue without saving");
+        }
+    } else {
+        attron(COLOR_PAIR(2));
+        printClippedLine(y++, boxX + 3, innerW, state.startupKeyPromptMessage);
+        attroff(COLOR_PAIR(2));
+        y++;
+        attron(A_BLINK);
+        printClippedLine(y, boxX + 3, innerW, "Press [ENTER] to continue");
+        attroff(A_BLINK);
+    }
+
+    drawStatusBar();
+    ::refresh();
+}
 
 
 void TUI::Impl::drawInit() {
@@ -2900,6 +3097,9 @@ void TUI::run() {
             case Screen::BOOT:
                 impl_->drawBoot();
                 break;
+            case Screen::KEY_BACKUP:
+                impl_->drawKeyBackup();
+                break;
             case Screen::INIT:
                 impl_->drawInit();
                 break;
@@ -2986,7 +3186,27 @@ void TUI::run() {
                 impl_->inputHandler(ch);
             }
             
-            if (impl_->screen == Screen::WEB_PROMPT) {
+            if (impl_->screen == Screen::KEY_BACKUP) {
+                if (impl_->state.startupKeyDataAvailable) {
+                    if (impl_->state.startupKeyBackupSaved) {
+                        if (ch == '\n' || ch == KEY_ENTER || ch == ' ' || ch == 27 || ch == 'y' || ch == 'Y' || ch == 'n' || ch == 'N') {
+                            impl_->screen = Screen::INIT;
+                            impl_->initStep = 0;
+                        }
+                    } else if (ch == 'y' || ch == 'Y') {
+                        std::string backupPath;
+                        if (!impl_->saveStartupKeyBackup(backupPath)) {
+                            impl_->state.startupKeyPromptMessage = "Backup write failed. Check data directory permissions.";
+                        }
+                    } else if (ch == 'n' || ch == 'N' || ch == 27) {
+                        impl_->screen = Screen::INIT;
+                        impl_->initStep = 0;
+                    }
+                } else if (ch == '\n' || ch == KEY_ENTER || ch == ' ' || ch == 27 || ch == 'y' || ch == 'Y' || ch == 'n' || ch == 'N') {
+                    impl_->screen = Screen::INIT;
+                    impl_->initStep = 0;
+                }
+            } else if (impl_->screen == Screen::WEB_PROMPT) {
                 auto applyAndContinue = [&]() {
                     {
                         std::lock_guard<std::mutex> lock(impl_->state.webMutex);
@@ -3916,8 +4136,12 @@ void TUI::run() {
                         break;
                     case ' ':
                         if (impl_->screen == Screen::BOOT) {
-                            impl_->screen = Screen::INIT;
-                            impl_->initStep = 0;
+                            impl_->state.startupKeyDataLoaded = false;
+                            impl_->state.startupKeyDataAvailable = false;
+                            impl_->state.startupKeyBackupSaved = false;
+                            impl_->state.startupKeyPromptMessage.clear();
+                            impl_->state.startupKeyBackupPath.clear();
+                            impl_->screen = Screen::KEY_BACKUP;
                         }
                         break;
                     case '\n':

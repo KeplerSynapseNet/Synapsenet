@@ -1,7 +1,9 @@
 #include "core/transfer.h"
 #include "crypto/crypto.h"
+#include "database/database.h"
 #include <cassert>
 #include <cstdint>
+#include <ctime>
 #include <chrono>
 #include <filesystem>
 #include <string>
@@ -28,6 +30,13 @@ static synapse::core::Transaction createTxWithMinFee(
         fee = requiredFee;
     }
     return tx;
+}
+
+static std::vector<uint8_t> u64le(uint64_t v) {
+    std::vector<uint8_t> out;
+    out.reserve(8);
+    for (int i = 0; i < 8; ++i) out.push_back(static_cast<uint8_t>((v >> (8 * i)) & 0xFF));
+    return out;
 }
 
 static void testUtxoOwnershipEnforced() {
@@ -89,6 +98,33 @@ static void testRejectsLowFee() {
     auto okTx = createTxWithMinFee(tm, addrA, addrB, 100);
     assert(tm.signTransaction(okTx, kpA.privateKey));
     assert(tm.submitTransaction(okTx));
+}
+
+static void testRejectsFutureTimestamp() {
+    auto uniq = std::to_string(static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
+    auto tmpDir = std::filesystem::temp_directory_path() / ("synapsenet_transfer_future_" + uniq);
+    std::error_code ec;
+    std::filesystem::remove_all(tmpDir, ec);
+    std::filesystem::create_directories(tmpDir, ec);
+    std::string dbPath = (tmpDir / "transfer.db").string();
+
+    synapse::core::TransferManager tm;
+    assert(tm.open(dbPath));
+
+    auto kpA = synapse::crypto::generateKeyPair();
+    auto kpB = synapse::crypto::generateKeyPair();
+    std::string addrA = addressFromPubKey(kpA.publicKey);
+    std::string addrB = addressFromPubKey(kpB.publicKey);
+    assert(!addrA.empty() && !addrB.empty());
+
+    synapse::crypto::Hash256 rewardId = synapse::crypto::sha256(std::string("reward_future"));
+    assert(tm.creditRewardDeterministic(addrA, rewardId, 100000));
+
+    auto tx = createTxWithMinFee(tm, addrA, addrB, 100);
+    tx.timestamp = static_cast<uint64_t>(std::time(nullptr)) + (3 * 60 * 60);
+    tx.txid = tx.computeHash();
+    assert(tm.signTransaction(tx, kpA.privateKey));
+    assert(!tm.submitTransaction(tx));
 }
 
 static void testBlockOrderRejectsDoubleSpend() {
@@ -296,13 +332,109 @@ static void testMempoolEvictsLowestFee() {
     assert(dropped.status == synapse::core::TxStatus::REJECTED);
 }
 
+static void testMempoolEvictsByFeeRateNotAbsoluteFee() {
+    auto uniq = std::to_string(static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
+    auto tmpDir = std::filesystem::temp_directory_path() / ("synapsenet_transfer_mempool_rate_" + uniq);
+    std::error_code ec;
+    std::filesystem::remove_all(tmpDir, ec);
+    std::filesystem::create_directories(tmpDir, ec);
+    std::string dbPath = (tmpDir / "transfer.db").string();
+
+    synapse::core::TransferManager tm;
+    assert(tm.open(dbPath));
+    tm.setMaxMempoolSize(1);
+
+    auto kpA = synapse::crypto::generateKeyPair();
+    auto kpB = synapse::crypto::generateKeyPair();
+    auto kpC = synapse::crypto::generateKeyPair();
+    std::string addrA = addressFromPubKey(kpA.publicKey);
+    std::string addrB = addressFromPubKey(kpB.publicKey);
+    std::string addrC = addressFromPubKey(kpC.publicKey);
+    assert(!addrA.empty() && !addrB.empty() && !addrC.empty());
+
+    assert(tm.creditRewardDeterministic(addrA, synapse::crypto::sha256(std::string("reward_rate_a1")), 60000));
+    assert(tm.creditRewardDeterministic(addrA, synapse::crypto::sha256(std::string("reward_rate_a2")), 60000));
+    assert(tm.creditRewardDeterministic(addrB, synapse::crypto::sha256(std::string("reward_rate_b1")), 100000));
+
+    auto txA = createTxWithMinFee(tm, addrA, addrC, 90000, 5000);
+    assert(txA.inputs.size() >= 2);
+    assert(tm.signTransaction(txA, kpA.privateKey));
+    assert(tm.submitTransaction(txA));
+
+    auto txB = createTxWithMinFee(tm, addrB, addrC, 90000, 4000);
+    assert(txB.inputs.size() == 1);
+    assert(tm.signTransaction(txB, kpB.privateKey));
+    assert(tm.submitTransaction(txB));
+
+    auto pending = tm.getPending();
+    assert(pending.size() == 1);
+    assert(pending[0].txid == txB.txid);
+
+    auto dropped = tm.getTransaction(txA.txid);
+    assert(dropped.txid == txA.txid);
+    assert(dropped.status == synapse::core::TxStatus::REJECTED);
+}
+
+static void testMalformedTransactionDeserializationRejected() {
+    std::vector<uint8_t> malformed;
+    malformed.resize(32 + 8 + 1 + 8 + 4 + 4);
+    size_t off = 32 + 8 + 1 + 8;
+    malformed[off + 0] = 0x01;
+    malformed[off + 1] = 0x00;
+    malformed[off + 2] = 0x00;
+    malformed[off + 3] = 0x00;
+    off += 4;
+    malformed[off + 0] = 0xFF;
+    malformed[off + 1] = 0xFF;
+    malformed[off + 2] = 0xFF;
+    malformed[off + 3] = 0x7F;
+
+    auto tx = synapse::core::Transaction::deserialize(malformed);
+    assert(tx.txid == synapse::crypto::Hash256{});
+}
+
+static void testOpenRepairsSupplyAndCounterMetadata() {
+    auto uniq = std::to_string(static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
+    auto tmpDir = std::filesystem::temp_directory_path() / ("synapsenet_transfer_repair_meta_" + uniq);
+    std::error_code ec;
+    std::filesystem::remove_all(tmpDir, ec);
+    std::filesystem::create_directories(tmpDir, ec);
+    std::string dbPath = (tmpDir / "transfer.db").string();
+
+    synapse::core::TransferManager tm;
+    assert(tm.open(dbPath));
+
+    auto kpA = synapse::crypto::generateKeyPair();
+    std::string addrA = addressFromPubKey(kpA.publicKey);
+    assert(!addrA.empty());
+    assert(tm.creditRewardDeterministic(addrA, synapse::crypto::sha256(std::string("reward_repair_meta")), 777));
+    assert(tm.totalSupply() == 777);
+    assert(tm.transactionCount() >= 1);
+    tm.close();
+
+    synapse::database::Database rawDb;
+    assert(rawDb.open(dbPath));
+    assert(rawDb.put("meta:totalSupply", u64le(1)));
+    assert(rawDb.put("meta:txCounter", u64le(0)));
+    rawDb.close();
+
+    synapse::core::TransferManager repaired;
+    assert(repaired.open(dbPath));
+    assert(repaired.totalSupply() == 777);
+    assert(repaired.transactionCount() >= 1);
+}
+
 int main() {
     testUtxoOwnershipEnforced();
     testRejectsLowFee();
+    testRejectsFutureTimestamp();
     testBlockOrderRejectsDoubleSpend();
     testBlockOrderAllowsChainedSpend();
     testApplyBlockDropsConflictingPending();
     testRollbackBlockRestoresUtxo();
     testMempoolEvictsLowestFee();
+    testMempoolEvictsByFeeRateNotAbsoluteFee();
+    testMalformedTransactionDeserializationRejected();
+    testOpenRepairsSupplyAndCounterMetadata();
     return 0;
 }

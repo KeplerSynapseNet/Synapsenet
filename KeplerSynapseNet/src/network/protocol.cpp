@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <chrono>
 #include <random>
+#include <cctype>
 
 namespace synapse {
 namespace network {
@@ -368,6 +369,7 @@ public:
     MessageBuilder(uint32_t networkMagic = MAGIC_MAINNET) : magic(networkMagic) {}
 
     std::vector<uint8_t> buildMessage(const std::string& command, const std::vector<uint8_t>& payload) {
+        if (payload.size() > LOCAL_MAX_MESSAGE_SIZE) return {};
         std::vector<uint8_t> message;
         message.reserve(24 + payload.size());
 
@@ -479,6 +481,28 @@ private:
     uint32_t expectedMagic;
     size_t headerSize;
 
+    static bool isValidCommandField(const uint8_t* p, size_t len) {
+        bool seenNull = false;
+        for (size_t i = 0; i < len; ++i) {
+            uint8_t c = p[i];
+            if (c == 0) {
+                seenNull = true;
+                continue;
+            }
+            if (seenNull) return false;
+            if (!std::isprint(static_cast<unsigned char>(c))) return false;
+        }
+        return true;
+    }
+
+    static uint32_t calculateChecksum(const std::vector<uint8_t>& data) {
+        auto hash = crypto::doubleSha256(data.data(), data.size());
+        return static_cast<uint32_t>(hash[0]) |
+               (static_cast<uint32_t>(hash[1]) << 8) |
+               (static_cast<uint32_t>(hash[2]) << 16) |
+               (static_cast<uint32_t>(hash[3]) << 24);
+    }
+
 public:
     MessageParser(uint32_t magic = MAGIC_MAINNET) : expectedMagic(magic), headerSize(24) {}
 
@@ -493,7 +517,11 @@ public:
     bool hasCompleteMessage() const {
         if (buffer.size() < headerSize) return false;
 
+        uint32_t magic = buffer[0] | (buffer[1] << 8) | (buffer[2] << 16) | (buffer[3] << 24);
+        if (magic != expectedMagic) return true;
+
         uint32_t length = buffer[16] | (buffer[17] << 8) | (buffer[18] << 16) | (buffer[19] << 24);
+        if (length > LOCAL_MAX_MESSAGE_SIZE) return true;
         return buffer.size() >= headerSize + length;
     }
 
@@ -515,6 +543,11 @@ public:
             return msg;
         }
 
+        if (!isValidCommandField(buffer.data() + 4, 12)) {
+            buffer.erase(buffer.begin(), buffer.begin() + headerSize);
+            return msg;
+        }
+
         msg.command = std::string(reinterpret_cast<char*>(&buffer[4]), 12);
         msg.command = msg.command.c_str();
 
@@ -525,7 +558,15 @@ public:
             return msg;
         }
 
+        uint32_t checksum = buffer[20] | (buffer[21] << 8) | (buffer[22] << 16) | (buffer[23] << 24);
         msg.payload.assign(buffer.begin() + headerSize, buffer.begin() + headerSize + length);
+        uint32_t calc = calculateChecksum(msg.payload);
+        if (checksum != calc) {
+            buffer.erase(buffer.begin(), buffer.begin() + headerSize + length);
+            msg.payload.clear();
+            return msg;
+        }
+
         buffer.erase(buffer.begin(), buffer.begin() + headerSize + length);
         msg.valid = true;
 

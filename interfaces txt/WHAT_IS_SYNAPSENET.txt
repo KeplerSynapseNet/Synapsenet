@@ -1376,7 +1376,7 @@ Everything encrypted, not just transactions:
 │  ✓ AI model inference requests/responses                                   │
 │  ✓ PoE validation messages                                                 │
 │  ✓ Knowledge sync chunks                                                   │
-│  ✓ Peer discovery (peer exchange via GETPEERS/PEERS, DNS seeds, network statistics)                                                          │
+│  ✓ Peer discovery (peer exchange via GETPEERS/PEERS, DNS seeds, network statistics)                                                          
 │  ✓ All P2P communication                                                   │
 │                                                                            │
 │  HOW:                                                                      │
@@ -4081,8 +4081,8 @@ Note (honest status):
 │  │  }                                                                   │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
 │                                                                            │
-│  Code: model_loader.cpp lines 1039-1071                                     │
-│        config.h lines 113-121 | config.cpp lines 70-75                       │
+│  Code: model_loader.cpp lines 1039-1071                                    │
+│        config.h lines 113-121 | config.cpp lines 70-75                     │
 │  Test: test_model_loader.cpp - ConfigSaveLoad test                         │
 │                                                                            │
 │                                                                            │
@@ -4151,10 +4151,10 @@ Note (honest status):
 │  │    Returns: sorted, unique list of model paths                       │  │
 │  └──────────────────────────────────────────────────────────────────────┘  │
 │                                                                            │
-│  Code: model_loader.cpp lines 1073-1112                                     │
-│        config.h lines 123-135 | config.cpp line 77                           │
-│  Note: listModels filters ggml-vocab-* and tiny (<50MB) .gguf files.        │
-│  Code: model_loader.cpp lines 931-954                                       │
+│  Code: model_loader.cpp lines 1073-1112                                    │
+│        config.h lines 123-135 | config.cpp line 77                         │
+│  Note: listModels filters ggml-vocab-* and tiny (<50MB) .gguf files.       │
+│  Code: model_loader.cpp lines 931-954                                      │
 │  Test: test_model_loader.cpp - ConfigScanPaths, AddRemoveModelScanPath     │
 │                                                                            │
 │                                                                            │

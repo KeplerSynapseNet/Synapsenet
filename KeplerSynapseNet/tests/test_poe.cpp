@@ -2,6 +2,7 @@
 #include "core/poe_v1_objects.h"
 #include "core/poe_v1_engine.h"
 #include "crypto/crypto.h"
+#include "database/database.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -311,6 +312,130 @@ static void testDuplicateContentRejected() {
     std::filesystem::remove_all(tmpDir, ec);
 }
 
+static void testVoteSelectionAndDeterministicFinalizationRecord() {
+    auto uniq = std::to_string(static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
+    auto tmpDir = std::filesystem::temp_directory_path() / ("synapsenet_poe_vote_sel_" + uniq);
+    std::error_code ec;
+    std::filesystem::remove_all(tmpDir, ec);
+    std::filesystem::create_directories(tmpDir, ec);
+    std::string dbPath = (tmpDir / "poe.db").string();
+
+    synapse::core::PoeV1Engine engine;
+    assert(engine.open(dbPath));
+
+    synapse::core::PoeV1Config cfg;
+    cfg.powBits = 8;
+    cfg.limits.minPowBits = cfg.powBits;
+    cfg.limits.maxPowBits = 28;
+    cfg.validatorsN = 1;
+    cfg.validatorsM = 1;
+    engine.setConfig(cfg);
+
+    synapse::crypto::PrivateKey skAuthor = makeSk(31);
+    synapse::crypto::PrivateKey skSelected = makeSk(32);
+    synapse::crypto::PrivateKey skOther = makeSk(33);
+    auto pkSelected = synapse::crypto::derivePublicKey(skSelected);
+    engine.setStaticValidators({pkSelected});
+
+    auto submitRes = engine.submit(
+        synapse::core::poe_v1::ContentType::TEXT,
+        "vote_test_title",
+        "vote_test_body",
+        {},
+        skAuthor,
+        false
+    );
+    assert(submitRes.ok);
+    assert(!submitRes.finalized);
+
+    auto entry = engine.getEntry(submitRes.submitId);
+    assert(entry.has_value());
+
+    synapse::core::poe_v1::ValidationVoteV1 badVote;
+    badVote.version = 1;
+    badVote.submitId = submitRes.submitId;
+    badVote.prevBlockHash = engine.chainSeed();
+    badVote.flags = 0;
+    badVote.scores = {100, 100, 100};
+    synapse::core::poe_v1::signValidationVoteV1(badVote, skOther);
+    assert(!engine.addVote(badVote));
+
+    synapse::core::poe_v1::ValidationVoteV1 goodVote;
+    goodVote.version = 1;
+    goodVote.submitId = submitRes.submitId;
+    goodVote.prevBlockHash = engine.chainSeed();
+    goodVote.flags = 0;
+    goodVote.scores = {100, 100, 100};
+    synapse::core::poe_v1::signValidationVoteV1(goodVote, skSelected);
+    assert(engine.addVote(goodVote));
+
+    auto fin = engine.finalize(submitRes.submitId);
+    assert(fin.has_value());
+    assert(fin->finalizedAt == entry->timestamp);
+    assert(fin->prevBlockHash == engine.chainSeed());
+
+    engine.close();
+    std::filesystem::remove_all(tmpDir, ec);
+}
+
+static std::vector<uint8_t> u64le(uint64_t v) {
+    std::vector<uint8_t> out;
+    out.reserve(8);
+    for (int i = 0; i < 8; ++i) out.push_back(static_cast<uint8_t>((v >> (8 * i)) & 0xFF));
+    return out;
+}
+
+static void testOpenRepairsEntryAndFinalizationCounters() {
+    auto uniq = std::to_string(static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
+    auto tmpDir = std::filesystem::temp_directory_path() / ("synapsenet_poe_meta_repair_" + uniq);
+    std::error_code ec;
+    std::filesystem::remove_all(tmpDir, ec);
+    std::filesystem::create_directories(tmpDir, ec);
+    std::string dbPath = (tmpDir / "poe.db").string();
+
+    synapse::core::PoeV1Engine engine;
+    assert(engine.open(dbPath));
+
+    synapse::core::PoeV1Config cfg;
+    cfg.powBits = 8;
+    cfg.limits.minPowBits = cfg.powBits;
+    cfg.limits.maxPowBits = 28;
+    cfg.validatorsN = 1;
+    cfg.validatorsM = 1;
+    engine.setConfig(cfg);
+
+    auto sk = makeSk(71);
+    auto pk = synapse::crypto::derivePublicKey(sk);
+    engine.setStaticValidators({pk});
+
+    auto submitRes = engine.submit(
+        synapse::core::poe_v1::ContentType::TEXT,
+        "repair_meta_title",
+        "repair_meta_body",
+        {},
+        sk,
+        true
+    );
+    assert(submitRes.ok);
+    assert(submitRes.finalized);
+    assert(engine.totalEntries() == 1);
+    assert(engine.totalFinalized() == 1);
+    engine.close();
+
+    synapse::database::Database rawDb;
+    assert(rawDb.open(dbPath));
+    assert(rawDb.put("meta:poe_v1:entries", u64le(0)));
+    assert(rawDb.put("meta:poe_v1:finalized", u64le(0)));
+    rawDb.close();
+
+    synapse::core::PoeV1Engine repaired;
+    assert(repaired.open(dbPath));
+    assert(repaired.totalEntries() == 1);
+    assert(repaired.totalFinalized() == 1);
+    repaired.close();
+    std::filesystem::remove_all(tmpDir, ec);
+}
+
 int main() {
     testCanonicalize();
     testCodeCanonicalize();
@@ -324,6 +449,8 @@ int main() {
     testAcceptanceRewardDeterminism();
     testEpochDeterminism();
     testDuplicateContentRejected();
+    testVoteSelectionAndDeterministicFinalizationRecord();
+    testOpenRepairsEntryAndFinalizationCounters();
     std::cout << "PoE v1 determinism tests passed\n";
     return 0;
 }

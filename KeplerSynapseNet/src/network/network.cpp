@@ -55,10 +55,18 @@ static bool isValidCommand(const char command[12]) {
 }
 
 std::vector<uint8_t> Message::serialize() const {
+    if (payload.size() > MAX_MESSAGE_SIZE) return {};
+    if (command.empty() || command.size() > 12) return {};
+    for (char c : command) {
+        unsigned char uc = static_cast<unsigned char>(c);
+        if (uc < 32 || uc > 126) return {};
+    }
+
     std::vector<uint8_t> out;
     MessageHeader hdr{};
     hdr.magic = PROTOCOL_MAGIC;
-    std::strncpy(hdr.command, command.c_str(), 12);
+    std::memset(hdr.command, 0, sizeof(hdr.command));
+    std::memcpy(hdr.command, command.data(), command.size());
     hdr.length = payload.size();
     
     crypto::Hash256 hash = crypto::doubleSha256(payload.data(), payload.size());
@@ -79,9 +87,11 @@ Message Message::deserialize(const std::vector<uint8_t>& data) {
     
     if (hdr.magic != PROTOCOL_MAGIC) return msg;
     if (hdr.length > MAX_MESSAGE_SIZE) return msg;
-    if (data.size() < sizeof(MessageHeader) + hdr.length) return msg;
+    if (!isValidCommand(hdr.command)) return msg;
+    if (data.size() != sizeof(MessageHeader) + hdr.length) return msg;
     
     msg.command = std::string(hdr.command, strnlen(hdr.command, 12));
+    if (msg.command.empty()) return Message{};
     msg.payload.assign(data.begin() + sizeof(MessageHeader), 
                        data.begin() + sizeof(MessageHeader) + hdr.length);
     
